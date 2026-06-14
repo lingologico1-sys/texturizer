@@ -700,9 +700,12 @@
           }
 
           .preview-panel {
-            position: relative;
+            position: sticky;
+            top: 16px;
+            align-self: start;
+            height: calc(100vh - 32px);
+            min-height: 480px;
             min-width: 0;
-            min-height: 620px;
             padding: 14px;
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -779,6 +782,8 @@
             }
 
             .preview-panel {
+              position: static;
+              height: auto;
               grid-template-columns: 1fr;
               grid-template-rows: 1fr 1fr;
               min-height: 420px;

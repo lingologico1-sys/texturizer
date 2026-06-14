@@ -318,7 +318,7 @@
           :host {
             display: block;
             width: 100%;
-            min-height: 620px;
+            min-height: 480px;
             box-sizing: border-box;
             font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             color: #1f2933;
@@ -332,9 +332,14 @@
           .filter-shell {
             display: grid;
             grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+            grid-template-rows: minmax(0, 1fr);
             gap: 18px;
             width: 100%;
-            min-height: 620px;
+            /* Fit the viewport (host page uses 24px body padding) so the page
+               itself does not scroll; the controls column scrolls internally
+               while the preview column stays put. */
+            height: calc(100vh - 48px);
+            min-height: 480px;
           }
 
           .panel,
@@ -350,6 +355,8 @@
             display: flex;
             flex-direction: column;
             gap: 16px;
+            overflow-y: auto;
+            min-height: 0;
           }
 
           .title {
@@ -700,11 +707,8 @@
           }
 
           .preview-panel {
-            position: sticky;
-            top: 16px;
-            align-self: start;
-            height: calc(100vh - 32px);
-            min-height: 480px;
+            position: relative;
+            height: 100%;
             min-width: 0;
             padding: 14px;
             display: grid;
@@ -779,10 +783,15 @@
           @media (max-width: 780px) {
             .filter-shell {
               grid-template-columns: 1fr;
+              grid-template-rows: auto;
+              height: auto;
+            }
+
+            .panel {
+              overflow: visible;
             }
 
             .preview-panel {
-              position: static;
               height: auto;
               grid-template-columns: 1fr;
               grid-template-rows: 1fr 1fr;

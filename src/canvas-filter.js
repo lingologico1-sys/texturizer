@@ -332,14 +332,10 @@
           .filter-shell {
             display: grid;
             grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
-            grid-template-rows: minmax(0, 1fr);
+            align-items: start;
             gap: 18px;
             width: 100%;
-            /* Fit the viewport (host page uses 24px body padding) so the page
-               itself does not scroll; the controls column scrolls internally
-               while the preview column stays put. */
-            height: calc(100vh - 48px);
-            min-height: 480px;
+            min-height: 620px;
           }
 
           .panel,
@@ -355,8 +351,6 @@
             display: flex;
             flex-direction: column;
             gap: 16px;
-            overflow-y: auto;
-            min-height: 0;
           }
 
           .title {
@@ -707,9 +701,14 @@
           }
 
           .preview-panel {
-            position: relative;
-            height: 100%;
+            position: sticky;
+            top: 16px;
+            /* Stays in view while the controls scroll. Capped to the viewport
+               (not forced to it) so the panel keeps its natural height and does
+               not jitter against the page scroll. */
+            max-height: calc(100vh - 48px);
             min-width: 0;
+            min-height: 480px;
             padding: 14px;
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -737,7 +736,9 @@
           canvas, img#originalImage {
             display: block;
             max-width: 100%;
-            max-height: 100%;
+            /* Cap to the viewport so a tall image can't push the sticky
+               preview taller than the screen (which causes scroll jitter). */
+            max-height: calc(100vh - 96px);
             width: auto;
             height: auto;
             border-radius: 10px;
@@ -783,16 +784,11 @@
           @media (max-width: 780px) {
             .filter-shell {
               grid-template-columns: 1fr;
-              grid-template-rows: auto;
-              height: auto;
-            }
-
-            .panel {
-              overflow: visible;
             }
 
             .preview-panel {
-              height: auto;
+              position: static;
+              max-height: none;
               grid-template-columns: 1fr;
               grid-template-rows: 1fr 1fr;
               min-height: 420px;

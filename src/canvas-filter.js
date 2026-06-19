@@ -745,6 +745,40 @@
             box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
           }
 
+          .zoom-toggle {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 12;
+            padding: 5px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1;
+            border-radius: 8px;
+            background: rgba(15, 23, 42, 0.72);
+            color: #fff;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
+            backdrop-filter: blur(2px);
+          }
+
+          :host(:not([data-has-image="true"])) .zoom-toggle {
+            display: none;
+          }
+
+          /* 1:1 view — show the canvas at its true backing-store size so the
+             real woven mesh is visible exactly as it downloads. The wrap
+             scrolls so a large image can be panned. */
+          :host([data-zoom="actual"]) .canvas-wrap {
+            overflow: auto;
+            place-items: start;
+            max-height: calc(100vh - 120px);
+          }
+
+          :host([data-zoom="actual"]) canvas {
+            max-width: none;
+            max-height: none;
+          }
+
           .empty-state {
             position: absolute;
             inset: 0;
@@ -869,6 +903,7 @@
               <img id="originalImage" alt="Original Image" />
             </div>
             <div class="canvas-wrap">
+              <button id="zoomToggle" class="zoom-toggle" type="button" title="View the preview at true pixel size">100%</button>
               <canvas id="canvas"></canvas>
             </div>
           </section>
@@ -893,6 +928,7 @@
       this.includeColorButton = this.shadowRoot.getElementById("includeColorButton");
       this.btnOpenAll = this.shadowRoot.getElementById("btnOpenAll");
       this.btnCloseAll = this.shadowRoot.getElementById("btnCloseAll");
+      this.zoomToggle = this.shadowRoot.getElementById("zoomToggle");
       this.excludedChips = this.shadowRoot.getElementById("excludedChips");
       this.includedChips = this.shadowRoot.getElementById("includedChips");
       this.inputs = {};
@@ -927,6 +963,8 @@
       this.btnCloseAll.addEventListener("click", () => {
         this.shadowRoot.querySelectorAll(".control-group").forEach(el => el.removeAttribute("open"));
       });
+
+      this.zoomToggle.addEventListener("click", () => this.toggleZoom());
 
       Object.entries(this.inputs).forEach(([name, input]) => {
         if (!input) return;
@@ -2384,6 +2422,24 @@
       const step = Number(config.step);
       const decimals = step > 0 && step < 1 ? String(step).split(".")[1].length : 0;
       return Number(value).toFixed(decimals);
+    }
+
+    toggleZoom() {
+      const isActual = this.getAttribute("data-zoom") === "actual";
+      if (isActual) {
+        this.removeAttribute("data-zoom");
+        this.zoomToggle.textContent = "100%";
+        this.zoomToggle.title = "View the preview at true pixel size";
+      } else {
+        this.setAttribute("data-zoom", "actual");
+        this.zoomToggle.textContent = "Fit";
+        this.zoomToggle.title = "Fit the preview to the panel";
+        const wrap = this.canvas && this.canvas.parentElement;
+        if (wrap) {
+          wrap.scrollLeft = 0;
+          wrap.scrollTop = 0;
+        }
+      }
     }
 
     resetControls() {

@@ -745,40 +745,6 @@
             box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
           }
 
-          .zoom-toggle {
-            position: absolute;
-            top: 8px;
-            right: 8px;
-            z-index: 12;
-            padding: 5px 10px;
-            font-size: 12px;
-            font-weight: 700;
-            line-height: 1;
-            border-radius: 8px;
-            background: rgba(15, 23, 42, 0.72);
-            color: #fff;
-            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
-            backdrop-filter: blur(2px);
-          }
-
-          :host(:not([data-has-image="true"])) .zoom-toggle {
-            display: none;
-          }
-
-          /* 1:1 view — show the canvas at its true backing-store size so the
-             real woven mesh is visible exactly as it downloads. The wrap
-             scrolls so a large image can be panned. */
-          :host([data-zoom="actual"]) .canvas-wrap {
-            overflow: auto;
-            place-items: start;
-            max-height: calc(100vh - 120px);
-          }
-
-          :host([data-zoom="actual"]) canvas {
-            max-width: none;
-            max-height: none;
-          }
-
           .empty-state {
             position: absolute;
             inset: 0;
@@ -903,7 +869,6 @@
               <img id="originalImage" alt="Original Image" />
             </div>
             <div class="canvas-wrap">
-              <button id="zoomToggle" class="zoom-toggle" type="button" title="View the preview at true pixel size">100%</button>
               <canvas id="canvas"></canvas>
             </div>
           </section>
@@ -912,7 +877,13 @@
     }
 
     cacheElements() {
+      // Visible preview canvas (2D). The WebGL render happens on a separate
+      // offscreen canvas at full image resolution; we high-quality downsample
+      // that into this one so the on-screen preview is an honest anti-aliased
+      // shrink of the export (the browser's own downscale aliases fine weaves).
       this.canvas = this.shadowRoot.getElementById("canvas");
+      this.displayCtx = this.canvas.getContext("2d");
+      this.glCanvas = document.createElement("canvas");
       this.originalImage = this.shadowRoot.getElementById("originalImage");
       this.fileInput = this.shadowRoot.getElementById("fileInput");
       this.downloadButton = this.shadowRoot.getElementById("downloadButton");
@@ -928,7 +899,6 @@
       this.includeColorButton = this.shadowRoot.getElementById("includeColorButton");
       this.btnOpenAll = this.shadowRoot.getElementById("btnOpenAll");
       this.btnCloseAll = this.shadowRoot.getElementById("btnCloseAll");
-      this.zoomToggle = this.shadowRoot.getElementById("zoomToggle");
       this.excludedChips = this.shadowRoot.getElementById("excludedChips");
       this.includedChips = this.shadowRoot.getElementById("includedChips");
       this.inputs = {};
@@ -963,8 +933,6 @@
       this.btnCloseAll.addEventListener("click", () => {
         this.shadowRoot.querySelectorAll(".control-group").forEach(el => el.removeAttribute("open"));
       });
-
-      this.zoomToggle.addEventListener("click", () => this.toggleZoom());
 
       Object.entries(this.inputs).forEach(([name, input]) => {
         if (!input) return;
@@ -1404,7 +1372,7 @@
       this.gl.finish();
 
       return await new Promise((resolve) => {
-        this.canvas.toBlob((blob) => resolve(blob), "image/png");
+        this.glCanvas.toBlob((blob) => resolve(blob), "image/png");
       });
     }
 
@@ -1432,7 +1400,7 @@
         return;
       }
 
-      const gl = this.canvas.getContext("webgl2", {
+      const gl = this.glCanvas.getContext("webgl2", {
         alpha: true,
         antialias: false,
         depth: false,
@@ -2355,7 +2323,7 @@
     }
 
     resizeCanvasBackingStore() {
-      if (!this.canvas) {
+      if (!this.glCanvas) {
         return;
       }
 
@@ -2363,18 +2331,19 @@
       let targetHeight;
 
       if (this.image && this.textureWidth > 1 && this.textureHeight > 1) {
+        // Render at full image resolution so the download keeps every thread.
         targetWidth = this.textureWidth;
         targetHeight = this.textureHeight;
       } else {
-        const rect = this.canvas.getBoundingClientRect();
+        const rect = this.canvas ? this.canvas.getBoundingClientRect() : { width: 0, height: 0 };
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         targetWidth = Math.max(1, Math.round((rect.width || 960) * dpr));
         targetHeight = Math.max(1, Math.round((rect.height || 540) * dpr));
       }
 
-      if (this.canvas.width !== targetWidth || this.canvas.height !== targetHeight) {
-        this.canvas.width = targetWidth;
-        this.canvas.height = targetHeight;
+      if (this.glCanvas.width !== targetWidth || this.glCanvas.height !== targetHeight) {
+        this.glCanvas.width = targetWidth;
+        this.glCanvas.height = targetHeight;
       }
     }
 
@@ -2422,24 +2391,6 @@
       const step = Number(config.step);
       const decimals = step > 0 && step < 1 ? String(step).split(".")[1].length : 0;
       return Number(value).toFixed(decimals);
-    }
-
-    toggleZoom() {
-      const isActual = this.getAttribute("data-zoom") === "actual";
-      if (isActual) {
-        this.removeAttribute("data-zoom");
-        this.zoomToggle.textContent = "100%";
-        this.zoomToggle.title = "View the preview at true pixel size";
-      } else {
-        this.setAttribute("data-zoom", "actual");
-        this.zoomToggle.textContent = "Fit";
-        this.zoomToggle.title = "Fit the preview to the panel";
-        const wrap = this.canvas && this.canvas.parentElement;
-        if (wrap) {
-          wrap.scrollLeft = 0;
-          wrap.scrollTop = 0;
-        }
-      }
     }
 
     resetControls() {
@@ -2545,14 +2496,14 @@
     renderCanvas() {
       const gl = this.gl;
 
-      if (!gl || !this.program || !this.vao || !this.canvas) {
+      if (!gl || !this.program || !this.vao || !this.glCanvas) {
         return;
       }
 
       this.resizeCanvasBackingStore();
 
-      const width = this.canvas.width;
-      const height = this.canvas.height;
+      const width = this.glCanvas.width;
+      const height = this.glCanvas.height;
 
       gl.viewport(0, 0, width, height);
       gl.clearColor(0, 0, 0, 0);
@@ -2625,6 +2576,84 @@
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);
+
+      this.updateDisplay();
+    }
+
+    // Downsample the full-resolution GL render into the visible canvas at its
+    // true on-screen size. Doing the shrink ourselves (in steps, area-averaged)
+    // produces an honest anti-aliased preview, instead of the browser's cheap
+    // one-pass downscale that aliases a fine weave into a coarser-looking blur.
+    updateDisplay() {
+      if (!this.canvas || !this.displayCtx || !this.glCanvas || !this.image) {
+        return;
+      }
+
+      const wrap = this.canvas.parentElement;
+      const availW = wrap ? wrap.clientWidth : 0;
+      if (availW <= 0) {
+        return; // hidden or not laid out yet
+      }
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const maxH = Math.max(160, window.innerHeight - 96);
+      const imgW = this.glCanvas.width;
+      const imgH = this.glCanvas.height;
+      const fit = Math.min(availW / imgW, maxH / imgH, 1);
+
+      const cssW = Math.max(1, Math.round(imgW * fit));
+      const cssH = Math.max(1, Math.round(imgH * fit));
+      const bw = Math.max(1, Math.round(cssW * dpr));
+      const bh = Math.max(1, Math.round(cssH * dpr));
+
+      this.canvas.style.width = cssW + "px";
+      this.canvas.style.height = cssH + "px";
+      if (this.canvas.width !== bw || this.canvas.height !== bh) {
+        this.canvas.width = bw;
+        this.canvas.height = bh;
+      }
+
+      const stepped = this.qualityDownscale(this.glCanvas, bw, bh);
+      const ctx = this.displayCtx;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.clearRect(0, 0, bw, bh);
+      ctx.drawImage(stepped.canvas, 0, 0, stepped.w, stepped.h, 0, 0, bw, bh);
+    }
+
+    // Repeatedly halve toward the target so each step is a clean 2x reduction,
+    // then return the last intermediate for a final <=2x draw by the caller.
+    qualityDownscale(src, dstW, dstH) {
+      let cur = src;
+      let w = src.width;
+      let h = src.height;
+
+      if (!this._ppA) {
+        this._ppA = document.createElement("canvas");
+        this._ppAx = this._ppA.getContext("2d");
+        this._ppB = document.createElement("canvas");
+        this._ppBx = this._ppB.getContext("2d");
+      }
+
+      let useA = true;
+      while (w > dstW * 2 && h > dstH * 2) {
+        const nw = Math.max(dstW, Math.floor(w / 2));
+        const nh = Math.max(dstH, Math.floor(h / 2));
+        const c = useA ? this._ppA : this._ppB;
+        const cx = useA ? this._ppAx : this._ppBx;
+        c.width = nw;
+        c.height = nh;
+        cx.imageSmoothingEnabled = true;
+        cx.imageSmoothingQuality = "high";
+        cx.clearRect(0, 0, nw, nh);
+        cx.drawImage(cur, 0, 0, w, h, 0, 0, nw, nh);
+        cur = c;
+        w = nw;
+        h = nh;
+        useA = !useA;
+      }
+
+      return { canvas: cur, w, h };
     }
 
     download(filename) {
@@ -2640,7 +2669,7 @@
       let dataUrl;
 
       try {
-        dataUrl = this.canvas.toDataURL("image/png");
+        dataUrl = this.glCanvas.toDataURL("image/png");
       } catch (error) {
         this.setStatus("Could not export the canvas.", true);
         this.emit("filter-error", { message: error.message });
@@ -2661,8 +2690,8 @@
       this.setStatus(`Downloaded ${outputName}.`);
       this.emit("download-ready", {
         filename: outputName,
-        width: this.canvas.width,
-        height: this.canvas.height
+        width: this.glCanvas.width,
+        height: this.glCanvas.height
       });
     }
 

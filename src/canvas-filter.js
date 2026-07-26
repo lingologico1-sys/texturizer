@@ -36,6 +36,7 @@
         "sharpness",
         "saturation",
         "halftone",
+        "masktolerance",
         "image-data",
         "export-request"
       ];
@@ -86,7 +87,8 @@
         washintensity: 0,
         sharpness: 0,
         saturation: 1.0,
-        halftone: 0
+        halftone: 0,
+        masktolerance: 8
       };
 
       this.controlConfig = {
@@ -118,10 +120,14 @@
         washcolor: { type: "color", group: "Effects", label: "Wash Color", value: "#6a11cb" },
         washintensity: { type: "range", group: "Effects", label: "Wash Intensity", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
         sharpness: { type: "range", group: "Effects", label: "Sharpness", min: 0, max: 2, step: 0.01, value: 0, suffix: "" },
-        halftone: { type: "range", group: "Effects", label: "Halftone", min: 0, max: 1, step: 0.01, value: 0, suffix: "" }
+        halftone: { type: "range", group: "Effects", label: "Halftone", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
+
+        masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" }
       };
 
       this.groupOrder = ["Texture", "Lighting", "Color", "Effects"];
+      // Rendered inside the custom Color Masks panel rather than as its own group.
+      this.maskGroup = "Color Masks";
 
       this.styleDefaults = {
         0: { scale: 36, depth: 0.65, soften: 0.25, papertint: 0.0, ao: 0.5 },
@@ -151,9 +157,11 @@
       this.batchRunning = false;
       this.excludedColors = [];
       this.includedColors = [];
+      this.excludeAll = false;
       this.pickMode = null;
       this.pickInterval = null;
-      this.MAX_PICKED_COLORS = 8;
+      this.MAX_PICKED_COLORS = 32;
+      this.boundExcludeAllChange = this.handleExcludeAllChange.bind(this);
     }
 
     connectedCallback() {
@@ -300,8 +308,12 @@
         Object.keys(grouped).filter((g) => !this.groupOrder.includes(g))
       );
 
+      const maskControlsMarkup = (grouped[this.maskGroup] || [])
+        .map(([name, cfg]) => buildControl(name, cfg))
+        .join("");
+
       const controlsMarkup = groupOrder
-        .filter((g) => grouped[g])
+        .filter((g) => grouped[g] && g !== this.maskGroup)
         .map((g) => {
           const items = grouped[g].map(([name, cfg]) => buildControl(name, cfg)).join("");
           return `
@@ -619,9 +631,33 @@
             cursor: not-allowed;
           }
 
+          .exclude-all-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+            user-select: none;
+          }
+
+          .exclude-all-row input {
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            cursor: pointer;
+            accent-color: #2563eb;
+          }
+
           .masks-row {
             display: flex;
             gap: 8px;
+          }
+
+          .chips-section.is-muted {
+            opacity: 0.45;
+            pointer-events: none;
           }
 
           .masks-row .action-button {
@@ -817,11 +853,16 @@
             <details class="control-group" open data-group="Color Masks">
               <summary class="control-group-title">Color Masks</summary>
               <div class="control-group-body">
+                <label class="exclude-all-row">
+                  <input id="excludeAllCheckbox" type="checkbox" />
+                  <span>Exclude all colors (then include one at a time)</span>
+                </label>
                 <div class="masks-row">
                   <button id="excludeColorButton" class="action-button" type="button">Exclude Color…</button>
                   <button id="includeColorButton" class="action-button" type="button">Include Color…</button>
                 </div>
-                <div class="chips-section">
+                ${maskControlsMarkup}
+                <div id="excludedSection" class="chips-section">
                   <div class="chips-label">Excluded</div>
                   <div id="excludedChips" class="color-chips" data-empty-label="None"></div>
                 </div>
@@ -901,6 +942,8 @@
       this.btnCloseAll = this.shadowRoot.getElementById("btnCloseAll");
       this.excludedChips = this.shadowRoot.getElementById("excludedChips");
       this.includedChips = this.shadowRoot.getElementById("includedChips");
+      this.excludeAllCheckbox = this.shadowRoot.getElementById("excludeAllCheckbox");
+      this.excludedSection = this.shadowRoot.getElementById("excludedSection");
       this.inputs = {};
       this.numInputs = {};
       this.labels = {};
@@ -924,6 +967,7 @@
       this.batchFolderInput.addEventListener("change", this.boundBatchFolderSelect);
       this.excludeColorButton.addEventListener("click", this.boundExcludeColorClick);
       this.includeColorButton.addEventListener("click", this.boundIncludeColorClick);
+      this.excludeAllCheckbox.addEventListener("change", this.boundExcludeAllChange);
       this.originalImage.addEventListener("click", this.boundOriginalImageClick);
       
       this.btnOpenAll.addEventListener("click", () => {
@@ -1203,6 +1247,7 @@
         const obj = JSON.parse(raw);
         if (Array.isArray(obj.exclude)) this.excludedColors = obj.exclude.slice(0, this.MAX_PICKED_COLORS);
         if (Array.isArray(obj.include)) this.includedColors = obj.include.slice(0, this.MAX_PICKED_COLORS);
+        this.excludeAll = !!obj.excludeAll;
       } catch (e) {}
     }
 
@@ -1210,7 +1255,8 @@
       try {
         localStorage.setItem("canvas-filter-color-masks", JSON.stringify({
           exclude: this.excludedColors,
-          include: this.includedColors
+          include: this.includedColors,
+          excludeAll: this.excludeAll
         }));
       } catch (e) {}
     }
@@ -1244,6 +1290,26 @@
       };
       buildChips(this.excludedColors, "exclude", this.excludedChips);
       buildChips(this.includedColors, "include", this.includedChips);
+      this.updateExcludeAllUI();
+    }
+
+    updateExcludeAllUI() {
+      if (this.excludeAllCheckbox) this.excludeAllCheckbox.checked = this.excludeAll;
+      if (this.excludeColorButton) this.excludeColorButton.disabled = this.excludeAll;
+      if (this.excludedSection) this.excludedSection.classList.toggle("is-muted", this.excludeAll);
+    }
+
+    handleExcludeAllChange() {
+      this.excludeAll = this.excludeAllCheckbox.checked;
+      if (this.excludeAll && this.pickMode === "exclude") this.finishColorPick(false);
+      this.updateExcludeAllUI();
+      this.saveColorMasks();
+      this.requestRender();
+      this.setStatus(
+        this.excludeAll
+          ? "All colors excluded — use “Include Color…” to texturize specific colors."
+          : "Exclude-all off — only picked colors are excluded."
+      );
     }
 
     startColorPick(mode) {
@@ -1296,9 +1362,12 @@
         this.finishColorPick(true);
         return;
       }
-      this.addPickedColor(pixel, this.pickMode);
+      const evicted = this.addPickedColor(pixel, this.pickMode);
       const action = this.pickMode === "exclude" ? "Excluded" : "Included";
-      this.setStatus(`${action} color rgb(${pixel.r}, ${pixel.g}, ${pixel.b}).`);
+      const note = evicted
+        ? ` (limit ${this.MAX_PICKED_COLORS} — oldest one dropped)`
+        : "";
+      this.setStatus(`${action} color rgb(${pixel.r}, ${pixel.g}, ${pixel.b}).${note}`);
       this.finishColorPick(true);
     }
 
@@ -1332,11 +1401,16 @@
       const { cb, cr } = this.rgbToCbCr(rgb.r, rgb.g, rgb.b);
       const entry = { r: rgb.r, g: rgb.g, b: rgb.b, cb, cr };
       const list = mode === "exclude" ? this.excludedColors : this.includedColors;
-      if (list.length >= this.MAX_PICKED_COLORS) list.shift();
+      let evicted = false;
+      if (list.length >= this.MAX_PICKED_COLORS) {
+        list.shift();
+        evicted = true;
+      }
       list.push(entry);
       this.updateChipsUI();
       this.saveColorMasks();
       this.requestRender();
+      return evicted;
     }
 
     removePickedColor(mode, index) {
@@ -1435,6 +1509,8 @@
       const fragmentShaderSource = `#version 300 es
         precision highp float;
 
+        #define MAX_MASK_COLORS ${this.MAX_PICKED_COLORS}
+
         uniform sampler2D u_image;
         uniform vec2 u_resolution;
         uniform float u_scale;
@@ -1459,9 +1535,11 @@
         uniform bool u_distressed;
         uniform bool u_preserveskin;
         uniform int u_excludedCount;
-        uniform vec2 u_excludedColors[8];
+        uniform vec2 u_excludedColors[MAX_MASK_COLORS];
         uniform int u_includedCount;
-        uniform vec2 u_includedColors[8];
+        uniform vec2 u_includedColors[MAX_MASK_COLORS];
+        uniform bool u_excludeall;
+        uniform float u_masktolerance;
         uniform bool u_hasImage;
         uniform float u_washintensity;
         uniform vec3 u_washcolor;
@@ -1882,18 +1960,25 @@
             128.0 + 0.5 * origR - 0.418688 * origG - 0.081312 * origB
           );
 
-          float excludeW = 0.0;
-          for (int i = 0; i < 8; i++) {
-            if (i >= u_excludedCount) break;
-            float d = length(origCbCr - u_excludedColors[i]);
-            excludeW = max(excludeW, 1.0 - smoothstep(8.0, 18.0, d));
+          // Inner radius is the tolerance itself; the feather out to full
+          // rejection keeps the original 8 -> 18 CbCr ratio.
+          float maskInner = u_masktolerance;
+          float maskOuter = u_masktolerance * 2.25;
+
+          float excludeW = u_excludeall ? 1.0 : 0.0;
+          if (!u_excludeall) {
+            for (int i = 0; i < MAX_MASK_COLORS; i++) {
+              if (i >= u_excludedCount) break;
+              float d = length(origCbCr - u_excludedColors[i]);
+              excludeW = max(excludeW, 1.0 - smoothstep(maskInner, maskOuter, d));
+            }
           }
 
           float includeW = 0.0;
-          for (int i = 0; i < 8; i++) {
+          for (int i = 0; i < MAX_MASK_COLORS; i++) {
             if (i >= u_includedCount) break;
             float d = length(origCbCr - u_includedColors[i]);
-            includeW = max(includeW, 1.0 - smoothstep(8.0, 18.0, d));
+            includeW = max(includeW, 1.0 - smoothstep(maskInner, maskOuter, d));
           }
 
           float protectMask = clamp(max(skinMask, excludeW) - includeW, 0.0, 1.0);
@@ -2057,6 +2142,8 @@
         uExcludedColors: gl.getUniformLocation(this.program, "u_excludedColors"),
         uIncludedCount: gl.getUniformLocation(this.program, "u_includedCount"),
         uIncludedColors: gl.getUniformLocation(this.program, "u_includedColors"),
+        uExcludeAll: gl.getUniformLocation(this.program, "u_excludeall"),
+        uMaskTolerance: gl.getUniformLocation(this.program, "u_masktolerance"),
         uHasImage: gl.getUniformLocation(this.program, "u_hasImage"),
         uTextureType: gl.getUniformLocation(this.program, "u_textureType"),
         uWashIntensity: gl.getUniformLocation(this.program, "u_washintensity"),
@@ -2538,17 +2625,21 @@
       gl.uniform1i(this.locations.uDistressed, this.params.distressed ? 1 : 0);
       gl.uniform1i(this.locations.uPreserveSkin, this.params.preserveskin ? 1 : 0);
 
-      const exCount = Math.min(this.excludedColors.length, 8);
-      const exArr = new Float32Array(16);
+      const maxColors = this.MAX_PICKED_COLORS;
+
+      const exCount = Math.min(this.excludedColors.length, maxColors);
+      const exArr = new Float32Array(maxColors * 2);
       for (let i = 0; i < exCount; i++) {
         exArr[i * 2] = this.excludedColors[i].cb;
         exArr[i * 2 + 1] = this.excludedColors[i].cr;
       }
       gl.uniform1i(this.locations.uExcludedCount, exCount);
       gl.uniform2fv(this.locations.uExcludedColors, exArr);
+      gl.uniform1i(this.locations.uExcludeAll, this.excludeAll ? 1 : 0);
+      gl.uniform1f(this.locations.uMaskTolerance, this.params.masktolerance);
 
-      const inCount = Math.min(this.includedColors.length, 8);
-      const inArr = new Float32Array(16);
+      const inCount = Math.min(this.includedColors.length, maxColors);
+      const inArr = new Float32Array(maxColors * 2);
       for (let i = 0; i < inCount; i++) {
         inArr[i * 2] = this.includedColors[i].cb;
         inArr[i * 2 + 1] = this.includedColors[i].cr;

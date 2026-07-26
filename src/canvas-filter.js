@@ -942,6 +942,26 @@
             text-align: center;
           }
 
+          .fs-tolerance {
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #94a3b8;
+          }
+
+          .fs-tolerance input[type="range"] {
+            width: 180px;
+          }
+
+          .fs-tolerance output {
+            min-width: 2ch;
+            font-variant-numeric: tabular-nums;
+            color: #e2e8f0;
+          }
+
           @media (max-width: 780px) {
             .filter-shell {
               grid-template-columns: 1fr;
@@ -1062,6 +1082,18 @@
               </div>
               <div class="preview-tools">
                 <span class="preview-caption">Texturized</span>
+                <label class="fs-only fs-tolerance">
+                  <span>Match Tolerance</span>
+                  <input
+                    id="fsMaskToleranceInput"
+                    type="range"
+                    min="${this.controlConfig.masktolerance.min}"
+                    max="${this.controlConfig.masktolerance.max}"
+                    step="${this.controlConfig.masktolerance.step}"
+                    value="${this.controlConfig.masktolerance.value}"
+                  />
+                  <output id="fsMaskToleranceValue">${this.controlConfig.masktolerance.value}</output>
+                </label>
                 <button id="fsCanvasButton" class="action-button fs-button" type="button">Full Screen</button>
               </div>
             </div>
@@ -1103,6 +1135,8 @@
       this.fsExcludeButton = this.shadowRoot.getElementById("fsExcludeButton");
       this.fsIncludeButton = this.shadowRoot.getElementById("fsIncludeButton");
       this.fsStatusEl = this.shadowRoot.getElementById("fsStatus");
+      this.fsToleranceInput = this.shadowRoot.getElementById("fsMaskToleranceInput");
+      this.fsToleranceValue = this.shadowRoot.getElementById("fsMaskToleranceValue");
       this.originalCell = this.shadowRoot.querySelector('[data-cell="original"]');
       this.texturizedCell = this.shadowRoot.querySelector('[data-cell="texturized"]');
       this.inputs = {};
@@ -1131,6 +1165,11 @@
       this.excludeAllCheckbox.addEventListener("change", this.boundExcludeAllChange);
       this.fsExcludeButton.addEventListener("click", this.boundExcludeColorClick);
       this.fsIncludeButton.addEventListener("click", this.boundIncludeColorClick);
+      // Drives the same attribute as the sidebar slider, so syncControl keeps
+      // the two in step and presets still see a single source of truth.
+      this.fsToleranceInput.addEventListener("input", () => {
+        this.setAttribute("masktolerance", this.fsToleranceInput.value);
+      });
       this.fsOriginalButton.addEventListener("click", () => this.toggleFullscreen(this.originalCell));
       this.fsCanvasButton.addEventListener("click", () => this.toggleFullscreen(this.texturizedCell));
       this.versionBadge.addEventListener("click", this.boundVersionBadgeClick);
@@ -2710,6 +2749,11 @@
 
       if (numInput && this.shadowRoot.activeElement !== numInput) {
         numInput.value = this.formatNumber(value, config);
+      }
+
+      if (name === "masktolerance" && this.fsToleranceInput) {
+        this.fsToleranceInput.value = String(value);
+        this.fsToleranceValue.textContent = this.formatNumber(value, config);
       }
     }
 

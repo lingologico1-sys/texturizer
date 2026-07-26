@@ -3,6 +3,12 @@
 
   const TAG_NAME = "texturize-filter";
 
+  // Injected by vite's `define` at build time (see vite.config.js). Guarded so
+  // the element still works if the file is loaded outside the bundler.
+  const BUILD_SHA = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev";
+  const BUILD_TIME = typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "";
+  const SEEN_BUILD_KEY = "canvas-filter-seen-build";
+
   if (customElements.get(TAG_NAME)) {
     return;
   }
@@ -162,6 +168,8 @@
       this.pickInterval = null;
       this.MAX_PICKED_COLORS = 32;
       this.boundExcludeAllChange = this.handleExcludeAllChange.bind(this);
+      this.boundVersionBadgeClick = this.handleVersionBadgeClick.bind(this);
+      this.boundFullscreenChange = this.handleFullscreenChange.bind(this);
     }
 
     connectedCallback() {
@@ -171,6 +179,7 @@
       this.loadColorMasks();
       this.updateChipsUI();
       this.bindUiEvents();
+      this.initVersionBadge();
       this.applyInitialAttributes();
       this.loadRecentSettings();
       this.initWebGL();
@@ -758,6 +767,78 @@
             background-position: 0 0, 0 12px, 12px -12px, -12px 0;
           }
 
+          .version-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 20;
+            padding: 3px 9px;
+            border-radius: 999px;
+            border: 1px solid rgba(31, 41, 51, 0.14);
+            background: rgba(255, 255, 255, 0.92);
+            color: #64748b;
+            font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            letter-spacing: 0.03em;
+            cursor: pointer;
+          }
+
+          .version-badge:hover {
+            color: #1f2933;
+            border-color: rgba(31, 41, 51, 0.3);
+          }
+
+          /* Highlighted until acknowledged when the SHA differs from the build
+             this browser last saw, so a redeploy is visible at a glance. */
+          .version-badge.is-new {
+            background: #0f766e;
+            border-color: #0f766e;
+            color: #fff;
+          }
+
+          .version-badge.is-new::before {
+            content: "";
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            margin-right: 5px;
+            border-radius: 50%;
+            background: #5eead4;
+            vertical-align: middle;
+          }
+
+          .preview-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 0;
+          }
+
+          .preview-tools {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+          }
+
+          .preview-caption {
+            flex: 1;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #64748b;
+          }
+
+          .fs-button {
+            padding: 6px 12px;
+            font-size: 12px;
+          }
+
+          /* Only meaningful once the cell is the fullscreen element. */
+          .fs-only {
+            display: none;
+          }
+
           .canvas-wrap, .image-wrap {
             position: relative;
             min-width: 0;
@@ -812,9 +893,53 @@
             display: none;
           }
 
-          :host(:not([data-has-image="true"])) .image-wrap,
-          :host(:not([data-has-image="true"])) .canvas-wrap {
+          :host(:not([data-has-image="true"])) .preview-cell {
             display: none;
+          }
+
+          /* Fullscreen: a grid so the image area takes the leftover row and the
+             toolbar/status keep their intrinsic height at the bottom. */
+          .preview-cell:fullscreen {
+            display: grid;
+            grid-template-rows: 1fr auto auto;
+            padding: 12px;
+            gap: 10px;
+            background: #0b1220;
+          }
+
+          .preview-cell:fullscreen .image-wrap,
+          .preview-cell:fullscreen .canvas-wrap {
+            min-height: 0;
+            background: transparent;
+          }
+
+          /* No max-height override here on purpose: the base rule's
+             calc(100vh - 96px) is already correct in fullscreen, where 100vh is
+             the screen. A percentage max-height does not reliably resolve
+             against a stretched grid item, which let tall images overflow the
+             wrap and get clipped by its overflow:hidden. */
+          .preview-cell:fullscreen img#originalImage,
+          .preview-cell:fullscreen canvas {
+            max-width: 100%;
+          }
+
+          .preview-cell:fullscreen .preview-caption {
+            color: #94a3b8;
+          }
+
+          .preview-cell:fullscreen .fs-only {
+            display: flex;
+          }
+
+          .fs-pick-row {
+            gap: 8px;
+          }
+
+          .fs-status {
+            min-height: 16px;
+            font-size: 12px;
+            color: #cbd5f5;
+            text-align: center;
           }
 
           @media (max-width: 780px) {
@@ -823,7 +948,9 @@
             }
 
             .preview-panel {
-              position: static;
+              /* relative, not static: keeps the absolutely positioned version
+                 badge anchored to the panel once it stops being sticky. */
+              position: relative;
               max-height: none;
               grid-template-columns: 1fr;
               grid-template-rows: 1fr 1fr;
@@ -900,17 +1027,43 @@
           </aside>
 
           <section class="preview-panel" aria-label="Texture filter preview">
+            <button
+              id="versionBadge"
+              class="version-badge"
+              type="button"
+              aria-label="Build version"
+            >${BUILD_SHA}</button>
+
             <div class="empty-state">
               <div class="empty-card">
                 <strong>No image loaded</strong>
                 <span>The GPU preview will appear here after you choose a local image.</span>
               </div>
             </div>
-            <div class="image-wrap">
-              <img id="originalImage" alt="Original Image" />
+
+            <div class="preview-cell" data-cell="original">
+              <div class="image-wrap">
+                <img id="originalImage" alt="Original Image" />
+              </div>
+              <div class="preview-tools">
+                <span class="preview-caption">Original</span>
+                <div class="fs-only fs-pick-row">
+                  <button id="fsExcludeButton" class="action-button" type="button">Exclude Color…</button>
+                  <button id="fsIncludeButton" class="action-button" type="button">Include Color…</button>
+                </div>
+                <button id="fsOriginalButton" class="action-button fs-button" type="button">Full Screen</button>
+              </div>
+              <div id="fsStatus" class="fs-only fs-status" role="status" aria-live="polite"></div>
             </div>
-            <div class="canvas-wrap">
-              <canvas id="canvas"></canvas>
+
+            <div class="preview-cell" data-cell="texturized">
+              <div class="canvas-wrap">
+                <canvas id="canvas"></canvas>
+              </div>
+              <div class="preview-tools">
+                <span class="preview-caption">Texturized</span>
+                <button id="fsCanvasButton" class="action-button fs-button" type="button">Full Screen</button>
+              </div>
             </div>
           </section>
         </div>
@@ -944,6 +1097,14 @@
       this.includedChips = this.shadowRoot.getElementById("includedChips");
       this.excludeAllCheckbox = this.shadowRoot.getElementById("excludeAllCheckbox");
       this.excludedSection = this.shadowRoot.getElementById("excludedSection");
+      this.versionBadge = this.shadowRoot.getElementById("versionBadge");
+      this.fsOriginalButton = this.shadowRoot.getElementById("fsOriginalButton");
+      this.fsCanvasButton = this.shadowRoot.getElementById("fsCanvasButton");
+      this.fsExcludeButton = this.shadowRoot.getElementById("fsExcludeButton");
+      this.fsIncludeButton = this.shadowRoot.getElementById("fsIncludeButton");
+      this.fsStatusEl = this.shadowRoot.getElementById("fsStatus");
+      this.originalCell = this.shadowRoot.querySelector('[data-cell="original"]');
+      this.texturizedCell = this.shadowRoot.querySelector('[data-cell="texturized"]');
       this.inputs = {};
       this.numInputs = {};
       this.labels = {};
@@ -968,6 +1129,14 @@
       this.excludeColorButton.addEventListener("click", this.boundExcludeColorClick);
       this.includeColorButton.addEventListener("click", this.boundIncludeColorClick);
       this.excludeAllCheckbox.addEventListener("change", this.boundExcludeAllChange);
+      this.fsExcludeButton.addEventListener("click", this.boundExcludeColorClick);
+      this.fsIncludeButton.addEventListener("click", this.boundIncludeColorClick);
+      this.fsOriginalButton.addEventListener("click", () => this.toggleFullscreen(this.originalCell));
+      this.fsCanvasButton.addEventListener("click", () => this.toggleFullscreen(this.texturizedCell));
+      this.versionBadge.addEventListener("click", this.boundVersionBadgeClick);
+      // fullscreenchange is dispatched at the cell inside the shadow tree, but
+      // it is composed, so it reaches document — one listener covers both cells.
+      document.addEventListener("fullscreenchange", this.boundFullscreenChange);
       this.originalImage.addEventListener("click", this.boundOriginalImageClick);
       
       this.btnOpenAll.addEventListener("click", () => {
@@ -1291,6 +1460,76 @@
       buildChips(this.excludedColors, "exclude", this.excludedChips);
       buildChips(this.includedColors, "include", this.includedChips);
       this.updateExcludeAllUI();
+    }
+
+    initVersionBadge() {
+      if (!this.versionBadge) return;
+
+      let seen = null;
+      try {
+        seen = localStorage.getItem(SEEN_BUILD_KEY);
+      } catch (e) {}
+
+      const when = BUILD_TIME ? new Date(BUILD_TIME).toLocaleString() : "unknown";
+      // Only flag as new when there is a previous build to have moved on from;
+      // a first visit shouldn't claim an update happened.
+      const isNew = !!seen && seen !== BUILD_SHA;
+
+      this.versionBadge.classList.toggle("is-new", isNew);
+      this.versionBadge.title = isNew
+        ? `Updated: ${seen} → ${BUILD_SHA}\nBuilt ${when}\nClick to dismiss`
+        : `Build ${BUILD_SHA}\nBuilt ${when}`;
+
+      if (!seen) this.markBuildSeen();
+    }
+
+    markBuildSeen() {
+      try {
+        localStorage.setItem(SEEN_BUILD_KEY, BUILD_SHA);
+      } catch (e) {}
+    }
+
+    handleVersionBadgeClick() {
+      const wasNew = this.versionBadge.classList.contains("is-new");
+      this.markBuildSeen();
+      this.versionBadge.classList.remove("is-new");
+      this.initVersionBadge();
+      if (wasNew) this.setStatus(`Now running build ${BUILD_SHA}.`);
+    }
+
+    // The fullscreen element lives in the shadow tree, so ask the shadow root:
+    // document.fullscreenElement would retarget to the host and lose which cell.
+    currentFullscreenCell() {
+      return this.shadowRoot ? this.shadowRoot.fullscreenElement : null;
+    }
+
+    async toggleFullscreen(cell) {
+      if (!cell) return;
+      try {
+        if (this.currentFullscreenCell()) {
+          await document.exitFullscreen();
+        } else {
+          await cell.requestFullscreen();
+        }
+      } catch (error) {
+        this.setStatus(`Full screen unavailable: ${error.message}`, true);
+      }
+    }
+
+    handleFullscreenChange() {
+      const cell = this.currentFullscreenCell();
+      const label = (btn, own) => {
+        if (btn) btn.textContent = cell && cell === own ? "Exit Full Screen" : "Full Screen";
+      };
+      label(this.fsOriginalButton, this.originalCell);
+      label(this.fsCanvasButton, this.texturizedCell);
+
+      if (!cell && this.pickMode) this.finishColorPick(false);
+      if (this.fsStatusEl) this.fsStatusEl.textContent = "";
+
+      // The wrap just changed size; re-fit the preview into it.
+      this.resizeCanvasBackingStore();
+      this.requestRender();
     }
 
     updateExcludeAllUI() {
@@ -2485,7 +2724,17 @@
         this.setAttribute(name, String(config.value));
       });
 
-      this.setStatus(this.image ? "Controls reset." : "Choose an image to begin.");
+      // Colour masks are state, not controls, so they need clearing explicitly —
+      // otherwise a reset leaves invisible exclusions still suppressing texture.
+      if (this.pickMode) this.finishColorPick(false);
+      this.excludedColors = [];
+      this.includedColors = [];
+      this.excludeAll = false;
+      this.updateChipsUI();
+      this.saveColorMasks();
+      this.requestRender();
+
+      this.setStatus(this.image ? "Controls and colour masks reset." : "Choose an image to begin.");
     }
 
     saveRecentSettings() {
@@ -2687,6 +2936,9 @@
       }
 
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      // Same bound the CSS uses, and correct in fullscreen too since 100vh is
+      // then the screen. Deliberately not the wrap's own height: that is
+      // content-driven outside fullscreen and would feed back on itself.
       const maxH = Math.max(160, window.innerHeight - 96);
       const imgW = this.glCanvas.width;
       const imgH = this.glCanvas.height;
@@ -2802,6 +3054,13 @@
     }
 
     setStatus(message, isError = false) {
+      // Mirrored into the fullscreen cell, where the sidebar status is offscreen
+      // and the colour picker still needs to report its countdown.
+      if (this.fsStatusEl) {
+        this.fsStatusEl.textContent = message;
+        this.fsStatusEl.style.color = isError ? "#fca5a5" : "#cbd5f5";
+      }
+
       if (!this.statusEl) {
         return;
       }

@@ -43,6 +43,7 @@
         "saturation",
         "halftone",
         "masktolerance",
+        "inktolerance",
         "image-data",
         "export-request"
       ];
@@ -94,7 +95,8 @@
         sharpness: 0,
         saturation: 1.0,
         halftone: 0,
-        masktolerance: 8
+        masktolerance: 8,
+        inktolerance: 80
       };
 
       this.controlConfig = {
@@ -128,7 +130,8 @@
         sharpness: { type: "range", group: "Effects", label: "Sharpness", min: 0, max: 2, step: 0.01, value: 0, suffix: "" },
         halftone: { type: "range", group: "Effects", label: "Halftone", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
 
-        masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" }
+        masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" },
+        inktolerance: { type: "range", group: "Color Masks", label: "Black / Ink Tolerance", min: 0, max: 160, step: 1, value: 80, suffix: "" }
       };
 
       this.groupOrder = ["Texture", "Lighting", "Color", "Effects"];
@@ -1453,8 +1456,13 @@
         const raw = localStorage.getItem("canvas-filter-color-masks");
         if (!raw) return;
         const obj = JSON.parse(raw);
-        if (Array.isArray(obj.exclude)) this.excludedColors = obj.exclude.slice(0, this.MAX_PICKED_COLORS);
-        if (Array.isArray(obj.include)) this.includedColors = obj.include.slice(0, this.MAX_PICKED_COLORS);
+        // Colours saved before luma matching existed have no y; derive it from
+        // the rgb that was always stored rather than dropping the entry.
+        const restore = (list) => list.slice(0, this.MAX_PICKED_COLORS).map((c) =>
+          Number.isFinite(c.y) ? c : { ...c, ...this.rgbToYCbCr(c.r, c.g, c.b) });
+
+        if (Array.isArray(obj.exclude)) this.excludedColors = restore(obj.exclude);
+        if (Array.isArray(obj.include)) this.includedColors = restore(obj.include);
         this.excludeAll = !!obj.excludeAll;
       } catch (e) {}
     }
@@ -1469,10 +1477,11 @@
       } catch (e) {}
     }
 
-    rgbToCbCr(r, g, b) {
+    rgbToYCbCr(r, g, b) {
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
       const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
       const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-      return { cb, cr };
+      return { y, cb, cr };
     }
 
     updateChipsUI() {
@@ -1676,8 +1685,8 @@
     }
 
     addPickedColor(rgb, mode) {
-      const { cb, cr } = this.rgbToCbCr(rgb.r, rgb.g, rgb.b);
-      const entry = { r: rgb.r, g: rgb.g, b: rgb.b, cb, cr };
+      const { y, cb, cr } = this.rgbToYCbCr(rgb.r, rgb.g, rgb.b);
+      const entry = { r: rgb.r, g: rgb.g, b: rgb.b, y, cb, cr };
       const list = mode === "exclude" ? this.excludedColors : this.includedColors;
       let evicted = false;
       if (list.length >= this.MAX_PICKED_COLORS) {
@@ -1813,11 +1822,12 @@
         uniform bool u_distressed;
         uniform bool u_preserveskin;
         uniform int u_excludedCount;
-        uniform vec2 u_excludedColors[MAX_MASK_COLORS];
+        uniform vec3 u_excludedColors[MAX_MASK_COLORS];
         uniform int u_includedCount;
-        uniform vec2 u_includedColors[MAX_MASK_COLORS];
+        uniform vec3 u_includedColors[MAX_MASK_COLORS];
         uniform bool u_excludeall;
         uniform float u_masktolerance;
+        uniform float u_inktolerance;
         uniform bool u_hasImage;
         uniform float u_washintensity;
         uniform vec3 u_washcolor;
@@ -2174,6 +2184,33 @@
           return m * notTooDark;
         }
 
+        // How strongly a pixel matches one picked colour. pick is (Y, Cb, Cr).
+        //
+        // Chroma alone cannot describe black: every dark colour crowds around
+        // the neutral axis, so widening the CbCr radius sweeps up half the
+        // image before it ever reaches the anti-aliased edges of writing, whose
+        // chroma drifts toward the paper as they ramp through mid greys. So a
+        // pick that is both dark and neutral switches to matching on luma, on
+        // its own wider tolerance — that is what keeps ink out of the weave.
+        // Coloured picks are unaffected and behave exactly as before.
+        float maskWeight(vec3 pick, float origY, vec2 origCbCr) {
+          float pickChroma = length(pick.yz - vec2(128.0));
+          float blackness = (1.0 - smoothstep(40.0, 110.0, pick.x))
+                          * (1.0 - smoothstep(12.0, 34.0, pickChroma));
+
+          float dChroma = length(origCbCr - pick.yz);
+          float dLuma = abs(origY - pick.x);
+
+          // Ink is neutral, so an ink match demands the pixel be near-neutral
+          // too. Weighting chroma well above 1 is what stops it swallowing
+          // saturated darks: a deep red has a black-ish luma and would
+          // otherwise match on luma alone.
+          float dist = mix(dChroma, max(dLuma, dChroma * 3.0), blackness);
+          float tol = max(mix(u_masktolerance, u_inktolerance, blackness), 1.0);
+
+          return 1.0 - smoothstep(tol, tol * 2.25, dist);
+        }
+
         float computeAO(vec2 uv, vec2 original_uv, float hc) {
           vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
           float r = 4.5;
@@ -2233,30 +2270,24 @@
           float origR = origRgb.r * 255.0;
           float origG = origRgb.g * 255.0;
           float origB = origRgb.b * 255.0;
+          float origY = 0.299 * origR + 0.587 * origG + 0.114 * origB;
           vec2 origCbCr = vec2(
             128.0 - 0.168736 * origR - 0.331264 * origG + 0.5 * origB,
             128.0 + 0.5 * origR - 0.418688 * origG - 0.081312 * origB
           );
 
-          // Inner radius is the tolerance itself; the feather out to full
-          // rejection keeps the original 8 -> 18 CbCr ratio.
-          float maskInner = u_masktolerance;
-          float maskOuter = u_masktolerance * 2.25;
-
           float excludeW = u_excludeall ? 1.0 : 0.0;
           if (!u_excludeall) {
             for (int i = 0; i < MAX_MASK_COLORS; i++) {
               if (i >= u_excludedCount) break;
-              float d = length(origCbCr - u_excludedColors[i]);
-              excludeW = max(excludeW, 1.0 - smoothstep(maskInner, maskOuter, d));
+              excludeW = max(excludeW, maskWeight(u_excludedColors[i], origY, origCbCr));
             }
           }
 
           float includeW = 0.0;
           for (int i = 0; i < MAX_MASK_COLORS; i++) {
             if (i >= u_includedCount) break;
-            float d = length(origCbCr - u_includedColors[i]);
-            includeW = max(includeW, 1.0 - smoothstep(maskInner, maskOuter, d));
+            includeW = max(includeW, maskWeight(u_includedColors[i], origY, origCbCr));
           }
 
           float protectMask = clamp(max(skinMask, excludeW) - includeW, 0.0, 1.0);
@@ -2422,6 +2453,7 @@
         uIncludedColors: gl.getUniformLocation(this.program, "u_includedColors"),
         uExcludeAll: gl.getUniformLocation(this.program, "u_excludeall"),
         uMaskTolerance: gl.getUniformLocation(this.program, "u_masktolerance"),
+        uInkTolerance: gl.getUniformLocation(this.program, "u_inktolerance"),
         uHasImage: gl.getUniformLocation(this.program, "u_hasImage"),
         uTextureType: gl.getUniformLocation(this.program, "u_textureType"),
         uWashIntensity: gl.getUniformLocation(this.program, "u_washintensity"),
@@ -2920,25 +2952,26 @@
 
       const maxColors = this.MAX_PICKED_COLORS;
 
+      const pack = (list, count) => {
+        const arr = new Float32Array(maxColors * 3);
+        for (let i = 0; i < count; i++) {
+          arr[i * 3] = list[i].y;
+          arr[i * 3 + 1] = list[i].cb;
+          arr[i * 3 + 2] = list[i].cr;
+        }
+        return arr;
+      };
+
       const exCount = Math.min(this.excludedColors.length, maxColors);
-      const exArr = new Float32Array(maxColors * 2);
-      for (let i = 0; i < exCount; i++) {
-        exArr[i * 2] = this.excludedColors[i].cb;
-        exArr[i * 2 + 1] = this.excludedColors[i].cr;
-      }
       gl.uniform1i(this.locations.uExcludedCount, exCount);
-      gl.uniform2fv(this.locations.uExcludedColors, exArr);
+      gl.uniform3fv(this.locations.uExcludedColors, pack(this.excludedColors, exCount));
       gl.uniform1i(this.locations.uExcludeAll, this.excludeAll ? 1 : 0);
       gl.uniform1f(this.locations.uMaskTolerance, this.params.masktolerance);
+      gl.uniform1f(this.locations.uInkTolerance, this.params.inktolerance);
 
       const inCount = Math.min(this.includedColors.length, maxColors);
-      const inArr = new Float32Array(maxColors * 2);
-      for (let i = 0; i < inCount; i++) {
-        inArr[i * 2] = this.includedColors[i].cb;
-        inArr[i * 2 + 1] = this.includedColors[i].cr;
-      }
       gl.uniform1i(this.locations.uIncludedCount, inCount);
-      gl.uniform2fv(this.locations.uIncludedColors, inArr);
+      gl.uniform3fv(this.locations.uIncludedColors, pack(this.includedColors, inCount));
 
       gl.uniform1i(this.locations.uHasImage, this.image ? 1 : 0);
       gl.uniform1i(this.locations.uTextureType, this.params.texturetype);

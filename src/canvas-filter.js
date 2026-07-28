@@ -77,6 +77,7 @@
       this.resizeObserver = null;
       this.animationFrame = 0;
       this.bootFrame = 0;
+      this.hasBooted = false;
       this.imageLoadToken = 0;
       this.isReady = false;
       // Set only while exporting, when the render must be at native resolution
@@ -192,7 +193,28 @@
       this.boundFullscreenChange = this.handleFullscreenChange.bind(this);
     }
 
+    // Runs on every insertion, not just the first — moving the element in the
+    // DOM disconnects and reconnects it.
     connectedCallback() {
+      if (this.hasBooted) {
+        // The shadow DOM, the GL context and the loaded image all survive being
+        // detached, so a re-insertion only has to restart what
+        // disconnectedCallback stopped. Rebuilding the template here would hand
+        // cacheElements a fresh glCanvas while this.gl stayed bound to the old
+        // one, and the preview would go blank for good.
+        this.setupResizeObserver();
+
+        if (this.gl) {
+          this.requestRender();
+        } else {
+          // Detached before the boot frame got to run.
+          this.scheduleGraphicsBoot();
+        }
+
+        return;
+      }
+
+      this.hasBooted = true;
       this.renderTemplate();
       this.cacheElements();
       this.loadPresetsFromStorage();
@@ -202,11 +224,19 @@
       this.initVersionBadge();
       this.applyInitialAttributes();
       this.loadRecentSettings();
+      this.scheduleGraphicsBoot();
+    }
 
-      // Everything above is DOM the browser can paint immediately. Creating the
-      // WebGL context, compiling the shader and restoring the last image each
-      // cost tens to hundreds of milliseconds, so hand the frame back first: a
-      // visible, interactive panel beats a blank one that unfreezes later.
+    // Everything connectedCallback does synchronously is DOM the browser can
+    // paint immediately. Creating the WebGL context, compiling the shader and
+    // restoring the last image each cost tens to hundreds of milliseconds, so
+    // hand the frame back first: a visible, interactive panel beats a blank one
+    // that unfreezes later.
+    scheduleGraphicsBoot() {
+      if (this.bootFrame) {
+        return;
+      }
+
       this.bootFrame = requestAnimationFrame(() => {
         this.bootFrame = 0;
         if (!this.isConnected) {
@@ -215,14 +245,31 @@
 
         this.initWebGL();
         this.setupResizeObserver();
+
+        // Deferring the context means an image can now arrive before there is
+        // anywhere to put it — an `image-data` attribute set right after the
+        // element connects, whose decode beat this frame. uploadImageTexture
+        // silently no-ops without a context, so redo it here.
+        if (this.image) {
+          this.uploadImageTexture();
+        }
+
         this.resizeCanvasBackingStore();
         this.requestRender();
         this.isReady = true;
-        this.loadRecentImage();
+
+        // Only fall back to the stored image if nothing was handed to us; the
+        // last session's picture must not replace one the host explicitly set.
+        if (!this.image) {
+          this.loadRecentImage();
+        }
       });
     }
 
     disconnectedCallback() {
+      // Deliberately does not revoke this.objectUrl: the decoded image outlives
+      // detachment, so its URL has to as well. adoptObjectUrl and clearImage
+      // still release it whenever it is actually replaced.
       if (this.resizeObserver) {
         this.resizeObserver.disconnect();
         this.resizeObserver = null;
@@ -236,11 +283,6 @@
       if (this.bootFrame) {
         cancelAnimationFrame(this.bootFrame);
         this.bootFrame = 0;
-      }
-
-      if (this.objectUrl) {
-        URL.revokeObjectURL(this.objectUrl);
-        this.objectUrl = null;
       }
     }
 

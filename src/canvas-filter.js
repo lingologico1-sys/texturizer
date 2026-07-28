@@ -9,6 +9,17 @@
   const BUILD_TIME = typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "";
   const SEEN_BUILD_KEY = "canvas-filter-seen-build";
 
+  // The preview is downsampled into a canvas a few hundred CSS px wide, so
+  // rendering the shader at full image resolution spends seconds of GPU time on
+  // detail nothing can display. Render at this multiple of the on-screen size
+  // instead — still supersampled, so the weave stays honestly anti-aliased (see
+  // updateDisplay), at a small fraction of the pixels. Exports run native.
+  const PREVIEW_SUPERSAMPLE = 2;
+
+  // KHR_parallel_shader_compile. Querying it is the one program parameter that
+  // does not force the driver to finish linking.
+  const COMPLETION_STATUS_KHR = 0x91b1;
+
   if (customElements.get(TAG_NAME)) {
     return;
   }
@@ -65,8 +76,14 @@
       this.maxTextureSize = 4096;
       this.resizeObserver = null;
       this.animationFrame = 0;
+      this.bootFrame = 0;
       this.imageLoadToken = 0;
       this.isReady = false;
+      // Set only while exporting, when the render must be at native resolution
+      // rather than the cheap preview size.
+      this.fullResRender = false;
+      // Object URL backing the currently loaded image, so we can revoke it.
+      this.objectUrl = null;
 
       this.params = {
         texturetype: 0,
@@ -185,12 +202,24 @@
       this.initVersionBadge();
       this.applyInitialAttributes();
       this.loadRecentSettings();
-      this.initWebGL();
-      this.setupResizeObserver();
-      this.resizeCanvasBackingStore();
-      this.requestRender();
-      this.isReady = true;
-      this.loadRecentImage();
+
+      // Everything above is DOM the browser can paint immediately. Creating the
+      // WebGL context, compiling the shader and restoring the last image each
+      // cost tens to hundreds of milliseconds, so hand the frame back first: a
+      // visible, interactive panel beats a blank one that unfreezes later.
+      this.bootFrame = requestAnimationFrame(() => {
+        this.bootFrame = 0;
+        if (!this.isConnected) {
+          return;
+        }
+
+        this.initWebGL();
+        this.setupResizeObserver();
+        this.resizeCanvasBackingStore();
+        this.requestRender();
+        this.isReady = true;
+        this.loadRecentImage();
+      });
     }
 
     disconnectedCallback() {
@@ -202,6 +231,16 @@
       if (this.animationFrame) {
         cancelAnimationFrame(this.animationFrame);
         this.animationFrame = 0;
+      }
+
+      if (this.bootFrame) {
+        cancelAnimationFrame(this.bootFrame);
+        this.bootFrame = 0;
+      }
+
+      if (this.objectUrl) {
+        URL.revokeObjectURL(this.objectUrl);
+        this.objectUrl = null;
       }
     }
 
@@ -1444,6 +1483,9 @@
       this.resetButton.disabled = false;
       if (inputEl) inputEl.value = "";
 
+      // The batch left the canvas at export resolution.
+      this.restorePreviewRes();
+
       if (savedDataUrl) {
         this.loadImageFromDataUrl(savedDataUrl, savedFilename || "image", true);
       } else {
@@ -1710,31 +1752,29 @@
     }
 
     async processImageForBatch(file) {
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : null);
-        reader.onerror = () => reject(reader.error || new Error("Read failed"));
-        reader.readAsDataURL(file);
-      });
-      if (!dataUrl) return null;
+      // An object URL hands the file straight to the image decoder; base64ing it
+      // through a FileReader first only costs a copy and a main-thread decode.
+      const url = URL.createObjectURL(file);
 
-      const img = await new Promise((resolve, reject) => {
-        const i = new Image();
-        i.onload = () => resolve(i);
-        i.onerror = () => reject(new Error("Decode failed"));
-        i.src = dataUrl;
-      });
+      try {
+        const img = await new Promise((resolve, reject) => {
+          const i = new Image();
+          i.onload = () => resolve(i);
+          i.onerror = () => reject(new Error("Decode failed"));
+          i.src = url;
+        });
 
-      this.image = img;
-      this.originalFilename = file.name;
-      this.uploadImageTexture();
-      this.resizeCanvasBackingStore();
-      this.renderCanvas();
-      this.gl.finish();
+        this.image = img;
+        this.originalFilename = file.name;
+        this.uploadImageTexture();
+        this.renderFullRes();
 
-      return await new Promise((resolve) => {
-        this.glCanvas.toBlob((blob) => resolve(blob), "image/png");
-      });
+        return await new Promise((resolve) => {
+          this.glCanvas.toBlob((blob) => resolve(blob), "image/png");
+        });
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
 
     applyInitialAttributes() {
@@ -2412,15 +2452,88 @@
         }
       `;
 
-      try {
-        const vertexShader = this.createShader(gl.VERTEX_SHADER, vertexShaderSource);
-        const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
-        this.program = this.createProgram(vertexShader, fragmentShader);
-      } catch (error) {
-        this.setStatus(error.message, true);
-        this.emit("filter-error", { message: error.message });
-        return;
+      // Create the texture up front: restoring the last image can upload into
+      // it while the shader is still linking.
+      this.texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array([255, 255, 255, 0])
+      );
+
+      // Kick off the compile but do not ask whether it succeeded — every status
+      // query blocks the main thread until the driver has finished, and this
+      // fragment shader inlines nine texture styles across nine height taps per
+      // pixel, which can take the better part of a second. awaitProgram picks it
+      // up once the driver is done.
+      const vertexShader = this.createShader(gl.VERTEX_SHADER, vertexShaderSource);
+      const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
+      this.awaitProgram(this.createProgram(vertexShader, fragmentShader), vertexShader, fragmentShader);
+    }
+
+    // Poll until the driver has finished linking, then do the half of the setup
+    // that needs a usable program. With KHR_parallel_shader_compile the poll is
+    // free and the compile runs on a driver thread; without it we still get one
+    // frame of paint before the blocking status query.
+    awaitProgram(program, vertexShader, fragmentShader) {
+      const gl = this.gl;
+      const parallel = gl.getExtension("KHR_parallel_shader_compile");
+
+      const poll = () => {
+        if (this.gl !== gl) {
+          return;
+        }
+
+        if (parallel && !gl.getProgramParameter(program, COMPLETION_STATUS_KHR)) {
+          requestAnimationFrame(poll);
+          return;
+        }
+
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          const message = this.shaderErrorMessage(program, vertexShader, fragmentShader);
+          gl.deleteProgram(program);
+          this.setStatus(message, true);
+          this.emit("filter-error", { message });
+          return;
+        }
+
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        this.finishProgramInit(program);
+      };
+
+      requestAnimationFrame(poll);
+    }
+
+    shaderErrorMessage(program, vertexShader, fragmentShader) {
+      const gl = this.gl;
+
+      for (const shader of [vertexShader, fragmentShader]) {
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          return gl.getShaderInfoLog(shader) || "Unknown shader compile error.";
+        }
       }
+
+      return gl.getProgramInfoLog(program) || "Unknown shader program link error.";
+    }
+
+    finishProgramInit(program) {
+      const gl = this.gl;
+
+      this.program = program;
 
       this.locations = {
         aPosition: gl.getAttribLocation(this.program, "a_position"),
@@ -2497,25 +2610,9 @@
 
       gl.bindVertexArray(null);
 
-      this.texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        1,
-        1,
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        new Uint8Array([255, 255, 255, 0])
-      );
+      // Anything that asked to draw while the shader was still linking was
+      // silently dropped by renderCanvas, so ask again now.
+      this.requestRender();
     }
 
     setupResizeObserver() {
@@ -2531,18 +2628,14 @@
       this.resizeObserver.observe(this);
     }
 
+    // Both of these deliberately return without querying compile or link
+    // status; see awaitProgram for why.
     createShader(type, source) {
       const gl = this.gl;
       const shader = gl.createShader(type);
 
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
-
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader) || "Unknown shader compile error.";
-        gl.deleteShader(shader);
-        throw new Error(info);
-      }
 
       return shader;
     }
@@ -2554,12 +2647,6 @@
       gl.attachShader(program, vertexShader);
       gl.attachShader(program, fragmentShader);
       gl.linkProgram(program);
-
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program) || "Unknown shader program link error.";
-        gl.deleteProgram(program);
-        throw new Error(info);
-      }
 
       return program;
     }
@@ -2580,28 +2667,29 @@
       this.setStatus("Loading image…");
       this.downloadButton.disabled = true;
 
-      const reader = new FileReader();
-
-      reader.onload = () => {
-        if (typeof reader.result !== "string") {
-          this.setStatus("Could not read this image file.", true);
-          return;
-        }
-
-        this.loadImageFromDataUrl(reader.result, file.name);
-      };
-
-      reader.onerror = () => {
-        this.setStatus("Could not read this image file.", true);
-        this.emit("filter-error", { message: "FileReader could not read the selected image." });
-      };
-
-      reader.readAsDataURL(file);
+      // An object URL, not a FileReader data URL: base64 makes the string a
+      // third larger than the file and has to be decoded on the main thread
+      // before the image decoder even starts.
+      this.loadImageFromDataUrl(URL.createObjectURL(file), file.name, false, file);
     }
 
-    loadImageFromDataUrl(dataUrl, originalName = "image", skipSave = false) {
+    // Take ownership of a new object URL, releasing the one it replaces. Called
+    // only once the replacement has decoded, so the old URL stays valid until
+    // nothing is using it.
+    adoptObjectUrl(url) {
+      if (this.objectUrl && this.objectUrl !== url) {
+        URL.revokeObjectURL(this.objectUrl);
+      }
+
+      this.objectUrl = url || null;
+    }
+
+    // `src` may be a data URL or an object URL. `blob` is what gets persisted
+    // when the source is an object URL, whose bytes IndexedDB cannot store.
+    loadImageFromDataUrl(dataUrl, originalName = "image", skipSave = false, blob = null) {
       const token = ++this.imageLoadToken;
       const image = new Image();
+      const isObjectUrl = dataUrl.startsWith("blob:");
 
       image.onload = () => {
         if (token !== this.imageLoadToken) {
@@ -2610,6 +2698,7 @@
 
         this.image = image;
         this.originalImage.src = dataUrl;
+        this.adoptObjectUrl(isObjectUrl ? dataUrl : null);
         this.originalFilename = originalName;
         this.setAttribute("data-has-image", "true");
         this.uploadImageTexture();
@@ -2625,11 +2714,15 @@
         });
 
         if (!skipSave) {
-          this.saveImageToIndexedDB(dataUrl, originalName);
+          this.saveImageToIndexedDB(blob || dataUrl, originalName);
         }
       };
 
       image.onerror = () => {
+        if (isObjectUrl && dataUrl !== this.objectUrl) {
+          URL.revokeObjectURL(dataUrl);
+        }
+
         if (token !== this.imageLoadToken) {
           return;
         }
@@ -2644,6 +2737,7 @@
     clearImage(skipSave = false) {
       this.image = null;
       if (this.originalImage) this.originalImage.src = "";
+      this.adoptObjectUrl(null);
       this.textureSource = null;
       this.textureWidth = 1;
       this.textureHeight = 1;
@@ -2719,6 +2813,21 @@
       return canvas;
     }
 
+    // Device pixels the preview render is allowed to use: the largest the
+    // display canvas can be, times PREVIEW_SUPERSAMPLE. Mirrors the fit that
+    // updateDisplay computes, so the downscale there stays a clean 2x step.
+    previewBudget() {
+      const wrap = this.canvas ? this.canvas.parentElement : null;
+      const availW = wrap && wrap.clientWidth > 0 ? wrap.clientWidth : 960;
+      const maxH = Math.max(160, window.innerHeight - 96);
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      return {
+        width: Math.max(1, Math.round(availW * dpr * PREVIEW_SUPERSAMPLE)),
+        height: Math.max(1, Math.round(maxH * dpr * PREVIEW_SUPERSAMPLE))
+      };
+    }
+
     resizeCanvasBackingStore() {
       if (!this.glCanvas) {
         return;
@@ -2728,9 +2837,24 @@
       let targetHeight;
 
       if (this.image && this.textureWidth > 1 && this.textureHeight > 1) {
-        // Render at full image resolution so the download keeps every thread.
+        // Exports render at full image resolution so the download keeps every
+        // thread. The preview does not: it is shrunk to a few hundred CSS px
+        // either way, and the shader evaluates the height field nine times per
+        // pixel, so full resolution costs seconds of GPU for detail that is
+        // thrown away by the downscale.
         targetWidth = this.textureWidth;
         targetHeight = this.textureHeight;
+
+        if (!this.fullResRender) {
+          const budget = this.previewBudget();
+          const fit = Math.min(budget.width / targetWidth, budget.height / targetHeight, 1);
+
+          if (fit < 1) {
+            // One scalar for both axes so the preview keeps the export's aspect.
+            targetWidth = Math.max(1, Math.round(targetWidth * fit));
+            targetHeight = Math.max(1, Math.round(targetHeight * fit));
+          }
+        }
       } else {
         const rect = this.canvas ? this.canvas.getBoundingClientRect() : { width: 0, height: 0 };
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -2855,12 +2979,15 @@
       });
     }
 
-    async saveImageToIndexedDB(dataUrl, filename) {
+    // Stores the image as a Blob. A data URL would be a third larger and would
+    // have to be base64-decoded on the main thread on every subsequent load.
+    async saveImageToIndexedDB(source, filename) {
       try {
+        const blob = typeof source === "string" ? await (await fetch(source)).blob() : source;
         const db = await this.initIndexedDB();
         const tx = db.transaction("images", "readwrite");
         const store = tx.objectStore("images");
-        store.put({ dataUrl, filename }, "recentImage");
+        store.put({ blob, filename }, "recentImage");
       } catch (e) {
         console.warn("Failed to save image to IndexedDB", e);
       }
@@ -2874,8 +3001,17 @@
         const request = store.get("recentImage");
         request.onsuccess = () => {
           const result = request.result;
-          if (result && result.dataUrl) {
+          if (!result) {
+            return;
+          }
+
+          if (result.blob) {
+            this.loadImageFromDataUrl(URL.createObjectURL(result.blob), result.filename, true);
+          } else if (result.dataUrl) {
+            // Written before images were stored as blobs. Rewrite it so this is
+            // the last load that pays for the base64.
             this.loadImageFromDataUrl(result.dataUrl, result.filename, true);
+            this.saveImageToIndexedDB(result.dataUrl, result.filename);
           }
         };
       } catch (e) {
@@ -2994,7 +3130,38 @@
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);
 
-      this.updateDisplay();
+      // Reading back from the GL canvas blocks the main thread until the draw
+      // has actually finished. Worth it for the preview; wasted work during an
+      // export, whose frame never reaches the screen.
+      if (!this.fullResRender) {
+        this.updateDisplay();
+      }
+    }
+
+    // Render one frame at native image resolution for export. The caller must
+    // read the GL canvas before calling restorePreviewRes.
+    renderFullRes() {
+      // Drop any queued preview frame so it cannot resize the canvas back down
+      // between this render and the caller's readback.
+      if (this.animationFrame) {
+        cancelAnimationFrame(this.animationFrame);
+        this.animationFrame = 0;
+      }
+
+      this.fullResRender = true;
+
+      try {
+        this.resizeCanvasBackingStore();
+        this.renderCanvas();
+        this.gl.finish();
+      } finally {
+        this.fullResRender = false;
+      }
+    }
+
+    restorePreviewRes() {
+      this.resizeCanvasBackingStore();
+      this.requestRender();
     }
 
     // Downsample the full-resolution GL render into the visible canvas at its
@@ -3083,9 +3250,15 @@
         return;
       }
 
-      this.renderCanvas();
-      this.gl.finish();
+      if (!this.program) {
+        this.setStatus("Still preparing the filter — try again in a moment.", true);
+        return;
+      }
 
+      this.renderFullRes();
+
+      const exportWidth = this.glCanvas.width;
+      const exportHeight = this.glCanvas.height;
       let dataUrl;
 
       try {
@@ -3093,6 +3266,7 @@
       } catch (error) {
         this.setStatus("Could not export the canvas.", true);
         this.emit("filter-error", { message: error.message });
+        this.restorePreviewRes();
         return;
       }
 
@@ -3110,9 +3284,11 @@
       this.setStatus(`Downloaded ${outputName}.`);
       this.emit("download-ready", {
         filename: outputName,
-        width: this.glCanvas.width,
-        height: this.glCanvas.height
+        width: exportWidth,
+        height: exportHeight
       });
+
+      this.restorePreviewRes();
     }
 
     makeDownloadFilename() {

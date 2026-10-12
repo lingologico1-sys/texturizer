@@ -831,12 +831,20 @@ import {
             opacity: 1;
           }
 
-          /* Embedded in a host app: the host owns the picture and the presets,
-             and the badge would name a build that was never built here. */
+          /* Embedded in a host app: the host owns the picture, the presets and
+             saving, says what the panel is for in its own words, and the badge
+             would name a build that was never built here. */
+          :host([persist="off"]) .title,
+          :host([persist="off"]) .subtitle,
           :host([persist="off"]) .file-picker,
           :host([persist="off"]) .presets-container,
+          :host([persist="off"]) .download-button,
           :host([persist="off"]) .version-badge {
             display: none;
+          }
+
+          :host([persist="off"]) .buttons {
+            grid-template-columns: 1fr;
           }
 
           :host([data-picking="true"]) img#originalImage {

@@ -101,7 +101,8 @@ this repo at that commit. So:
     are taken one at a time.
   - `el.dispose()` — frees the GPU. Removing the element does not.
   - `persist="off"` — embedded mode: no `localStorage` or IndexedDB at all, and
-    the file picker, presets box and batch button are hidden.
+    the title, file picker, presets box, batch and download buttons are
+    hidden (the host has its own). Reset stays.
   - the `settings-change` event, and `image-data` for the panel's picture.
 - **A preset's masks are stored as r, g, b only.** Y/Cb/Cr are always worked
   out from them (`rgbToYCbCr` in `preset.js`), never read from a file.

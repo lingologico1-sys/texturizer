@@ -153,8 +153,9 @@ const sourcePixels = await pixels(source);
   check("the panel has no picture after rendering one for a host", el.image === null && !el.hasAttribute("data-has-image"));
 
   const display = (id) => getComputedStyle(el.shadowRoot.querySelector(id)).display;
-  check("embedded: file picker, presets and batch are hidden",
-    display(".file-picker") === "none" && display(".presets-container") === "none");
+  check("embedded: file picker, presets, batch, download and the title are hidden",
+    display(".file-picker") === "none" && display(".presets-container") === "none" && display(".download-button") === "none"
+      && display(".title") === "none" && display(".subtitle") === "none" && display(".reset-button") !== "none");
   el.handleFileChange({ target: { files: [new File([source], "x.png", { type: "image/png" })] } });
   await new Promise((r) => setTimeout(r, 300));
   check("embedded: the file handler cannot replace the picture", el.image === null);

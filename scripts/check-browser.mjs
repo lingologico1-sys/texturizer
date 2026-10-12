@@ -1,0 +1,412 @@
+// Checks the component in headless Chrome (software WebGL): the renderer API
+// a host app relies on (ready, applyPreset, getPreset, renderBlob, dispose),
+// embedded mode (persist="off"), presets carrying masks, and the mask preview
+// staying out of exports.
+//
+//   npm run check:browser
+//
+// The source files are served as they are, unbundled, which is also how a
+// host app loads its pinned copy. Set CHROME to the browser to use; otherwise
+// google-chrome, then a Playwright Chromium from ~/.cache/ms-playwright.
+// Software rendering proves function, not speed.
+
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { createServer } from "node:http";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function findChrome() {
+  if (process.env.CHROME) return process.env.CHROME;
+  for (const path of ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
+    if (existsSync(path)) return path;
+  }
+  const cache = join(homedir(), ".cache", "ms-playwright");
+  if (existsSync(cache)) {
+    for (const dir of readdirSync(cache).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
+      for (const sub of readdirSync(join(cache, dir))) {
+        const path = join(cache, dir, sub, "chrome");
+        if (existsSync(path)) return path;
+      }
+    }
+  }
+  throw new Error("No Chrome found. Set CHROME to its path.");
+}
+
+const pageScript = String.raw`
+import { validatePreset, settingsHash, defaultParams } from "/src/preset.js";
+
+const results = [];
+const check = (name, ok, detail = "") => results.push({ name, ok: !!ok, detail: String(detail) });
+const rejects = async (promise) => promise.then(() => null, (e) => e);
+
+// Count every touch of this origin's storage.
+const storage = { local: 0, idb: 0 };
+for (const method of ["getItem", "setItem", "removeItem", "clear", "key"]) {
+  const original = Storage.prototype[method];
+  Storage.prototype[method] = function (...args) {
+    storage.local++;
+    return original.apply(this, args);
+  };
+}
+const originalOpen = IDBFactory.prototype.open;
+IDBFactory.prototype.open = function (...args) {
+  storage.idb++;
+  return originalOpen.apply(this, args);
+};
+
+await import("/src/canvas-filter.js");
+await customElements.whenDefined("texturize-filter");
+
+function picture(width, height, hue) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, "hsl(" + hue + ", 70%, 60%)");
+  gradient.addColorStop(1, "hsl(" + (hue + 120) + ", 70%, 40%)");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(width * 0.2, height * 0.2, width * 0.3, height * 0.2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(width * 0.55, height * 0.6, width * 0.3, height * 0.2);
+  return canvas;
+}
+const toBlob = (canvas, type = "image/png") => new Promise((r) => canvas.toBlob(r, type));
+
+async function pixels(blob) {
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  return { width: bitmap.width, height: bitmap.height, data: ctx.getImageData(0, 0, bitmap.width, bitmap.height).data };
+}
+const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+function mount(attributes = {}) {
+  const el = document.createElement("texturize-filter");
+  for (const [k, v] of Object.entries(attributes)) el.setAttribute(k, v);
+  document.body.appendChild(el);
+  return el;
+}
+
+const source = await toBlob(picture(280, 385, 20));
+const sourcePixels = await pixels(source);
+
+// ---- Embedded mode first, while the storage counters are still at zero ----
+{
+  const el = mount({ persist: "off" });
+  await el.ready();
+  check("ready() resolves with a linked program", !!el.program);
+
+  const preset = el.getPreset("House");
+  preset.params.texturetype = 3;
+  preset.params.depth = 0.9;
+  preset.masks.exclude.push({ r: 0, g: 0, b: 0 });
+  const applied = el.applyPreset(preset);
+  check("applyPreset returns the hash of what it applied",
+    applied.settingsHash === validatePreset(preset).settingsHash && applied.settingsHash === el.currentSettingsHash());
+
+  let events = 0;
+  el.addEventListener("settings-change", () => events++);
+  el.setAttribute("scale", "50");
+  el.addPickedColor({ r: 255, g: 255, b: 255 }, "include");
+  await new Promise((r) => setTimeout(r, 0));
+  check("a settings-change event follows a change", events === 1, events);
+
+  // The same look, exported twice, and carried to a fresh element.
+  const first = el.getPreset("A");
+  const second = el.getPreset("B");
+  check("exporting the same settings twice gives the same hash",
+    validatePreset(first).settingsHash === validatePreset(second).settingsHash);
+  const other = mount({ persist: "off" });
+  await other.ready();
+  other.applyPreset(JSON.parse(JSON.stringify(first)));
+  const carried = other.getPreset("A");
+  check("export then import elsewhere: same settings, masks and hash",
+    JSON.stringify(carried.params) === JSON.stringify(first.params)
+      && JSON.stringify(carried.masks) === JSON.stringify(first.masks)
+      && other.currentSettingsHash() === el.currentSettingsHash());
+  other.dispose();
+
+  const before = el.currentSettingsHash();
+  const bad = el.getPreset("Bad");
+  bad.params.texturetype = 9;
+  let threw = false;
+  try { el.applyPreset(bad); } catch (e) { threw = true; }
+  check("a refused preset throws and changes nothing", threw && el.currentSettingsHash() === before);
+
+  const out = await el.renderBlob(source, { type: "image/png" });
+  const outPixels = await pixels(out.blob);
+  check("renderBlob gives a picture of the source's own size",
+    out.width === 280 && out.height === 385 && outPixels.width === 280 && outPixels.height === 385,
+    outPixels.width + "x" + outPixels.height);
+  check("the render is not blank and is not the untouched source",
+    outPixels.data.some((v) => v !== 0) && !same(outPixels.data, sourcePixels.data));
+  check("the panel has no picture after rendering one for a host", el.image === null && !el.hasAttribute("data-has-image"));
+
+  const display = (id) => getComputedStyle(el.shadowRoot.querySelector(id)).display;
+  check("embedded: file picker, presets and batch are hidden",
+    display(".file-picker") === "none" && display(".presets-container") === "none");
+  el.handleFileChange({ target: { files: [new File([source], "x.png", { type: "image/png" })] } });
+  await new Promise((r) => setTimeout(r, 300));
+  check("embedded: the file handler cannot replace the picture", el.image === null);
+  el.resetControls();
+  el.handleSavePreset();
+
+  el.dispose();
+  check("embedded: no storage was read or written", storage.local === 0 && storage.idb === 0, JSON.stringify(storage));
+}
+
+// ---- The ordinary component ----
+const el = mount();
+await el.ready();
+el.resetControls();
+check("the ordinary component does use storage", storage.local > 0, JSON.stringify(storage));
+
+// Presets and masks.
+{
+  el.addPickedColor({ r: 10, g: 20, b: 30 }, "exclude");
+  el.presets = { old: { ...defaultParams(), scale: 60 } };
+  el.updatePresetDropdown();
+  el.presetSelect.value = "old";
+  el.handleLoadPreset();
+  check("an old preset without masks leaves the masks alone",
+    el.params.scale === 60 && el.excludedColors.length === 1 && el.excludedColors[0].r === 10);
+
+  el.presetNameInput.value = "with masks";
+  el.handleSavePreset();
+  el.resetControls();
+  check("reset clears the masks", el.excludedColors.length === 0);
+  el.presetSelect.value = "with masks";
+  el.handleLoadPreset();
+  check("a preset saved now brings its masks back",
+    el.excludedColors.length === 1 && el.excludedColors[0].b === 30 && Number.isFinite(el.excludedColors[0].y));
+
+  const exported = el.getPreset("Imported one");
+  el.resetControls();
+  const imported = el.importPreset(JSON.parse(JSON.stringify(exported)));
+  check("importing a file keeps it as a preset and applies it",
+    imported && el.presets["Imported one"] && el.presets["Imported one"].masks.exclude.length === 1
+      && el.excludedColors.length === 1 && el.presetSelect.value === "Imported one");
+  const refused = el.importPreset({ ...exported, name: "Nope", version: 2 });
+  check("importing a bad file is refused and says why",
+    !refused && !el.presets.Nope && /version/.test(el.statusEl.textContent), el.statusEl.textContent);
+  const odd = { ...exported, name: "Odd", params: { ...exported.params, scale: 999, sparkle: 1 } };
+  el.importPreset(odd);
+  check("import warnings are shown", /scale/.test(el.statusEl.textContent) && /sparkle/.test(el.statusEl.textContent), el.statusEl.textContent);
+  el.resetControls();
+}
+
+// renderBlob beside a picture already in the panel.
+{
+  const panelPicture = picture(200, 275, 200);
+  el.setAttribute("image-data", panelPicture.toDataURL("image/png"));
+  await new Promise((resolve) => el.addEventListener("filter-ready", resolve, { once: true }));
+  const state = () => ({
+    image: el.image, src: el.originalImage.src, w: el.textureWidth, h: el.textureHeight,
+    hash: el.currentSettingsHash(), has: el.getAttribute("data-has-image"),
+  });
+  const unchanged = (a, b) => Object.keys(a).every((k) => a[k] === b[k]);
+
+  const before = state();
+  const a = await el.renderBlob(source, { type: "image/png" });
+  check("after a success the panel's picture and settings are unchanged", unchanged(before, state()));
+  await new Promise((r) => setTimeout(r, 400));
+  check("the preview canvas is back at the panel picture's shape",
+    Math.abs(el.glCanvas.width / el.glCanvas.height - 200 / 275) < 0.02, el.glCanvas.width + "x" + el.glCanvas.height);
+
+  const garbage = await rejects(el.renderBlob(new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" })));
+  check("a picture that can't be decoded rejects", garbage instanceof Error, garbage && garbage.message);
+  check("after a failure the panel's picture and settings are unchanged", unchanged(before, state()));
+  const wrong = await rejects(el.renderBlob(42));
+  check("a source that is neither a Blob nor a URL rejects", wrong instanceof Error);
+
+  const realToBlob = el.glCanvas.toBlob;
+  el.glCanvas.toBlob = (callback) => callback(null);
+  const empty = await rejects(el.renderBlob(source));
+  el.glCanvas.toBlob = realToBlob;
+  check("a null blob from the encoder rejects", empty instanceof Error, empty && empty.message);
+  check("and the renderer still works afterwards", (await el.renderBlob(source)).blob.size > 0);
+
+  const b = await el.renderBlob(source, { type: "image/png" });
+  check("the same render twice gives the same pixels", same((await pixels(a.blob)).data, (await pixels(b.blob)).data));
+
+  const url = URL.createObjectURL(source);
+  const fromUrl = await el.renderBlob(url, { type: "image/png" });
+  URL.revokeObjectURL(url);
+  check("a URL source renders the same as the Blob", same((await pixels(a.blob)).data, (await pixels(fromUrl.blob)).data));
+
+  const sized = await el.renderBlob(source, { type: "image/png", width: 140, height: 192 });
+  const sizedPixels = await pixels(sized.blob);
+  check("a given size is the size of the decoded picture", sizedPixels.width === 140 && sizedPixels.height === 192);
+
+  const webp = await el.renderBlob(source, { type: "image/webp", quality: 0.92 });
+  check("WebP is made when asked for", webp.type === "image/webp" && webp.blob.type === "image/webp", webp.type);
+  const fallback = await el.renderBlob(source, { type: "image/nope" });
+  check("an unsupported type comes back as PNG, and says so", fallback.type === "image/png", fallback.type);
+
+  // The mask preview never reaches an export.
+  el.addPickedColor({ r: 0, g: 0, b: 0 }, "exclude");
+  const plain = await pixels((await el.renderBlob(source)).blob);
+  el.maskPreviewCheckbox.checked = true;
+  el.maskPreviewCheckbox.dispatchEvent(new Event("change"));
+  const hashWithPreview = el.currentSettingsHash();
+  const tinted = await pixels((await el.renderBlob(source)).blob);
+  check("the mask preview is not in an export", el.maskPreview === true && same(plain.data, tinted.data));
+  el.renderCanvas();
+  const shown = el.displayCtx.getImageData(0, 0, el.canvas.width, el.canvas.height).data;
+  el.maskPreviewCheckbox.checked = false;
+  el.maskPreviewCheckbox.dispatchEvent(new Event("change"));
+  el.renderCanvas();
+  const hidden = el.displayCtx.getImageData(0, 0, el.canvas.width, el.canvas.height).data;
+  check("the mask preview does tint the on-screen preview", !same(shown, hidden));
+  check("the mask preview is not a setting", hashWithPreview === el.currentSettingsHash());
+  el.resetControls();
+
+  // Two calls at once must not overlap.
+  const log = [];
+  const realNow = el.renderBlobNow.bind(el);
+  el.renderBlobNow = async (...args) => {
+    log.push("start");
+    try { return await realNow(...args); } finally { log.push("end"); }
+  };
+  const [one, two] = await Promise.all([
+    el.renderBlob(source, { width: 100, height: 140 }),
+    el.renderBlob(source, { width: 60, height: 80 }),
+  ]);
+  delete el.renderBlobNow;
+  check("two calls at once are taken one after the other",
+    log.join(",") === "start,end,start,end" && one.width === 100 && two.width === 60
+      && (await pixels(one.blob)).width === 100 && (await pixels(two.blob)).width === 60, log.join(","));
+  const mixed = await Promise.allSettled([el.renderBlob(42), el.renderBlob(source)]);
+  check("a failed call does not block the one queued behind it",
+    mixed[0].status === "rejected" && mixed[1].status === "fulfilled");
+}
+
+// Context loss.
+{
+  const lost = mount({ persist: "off" });
+  await lost.ready();
+  let heard = "";
+  lost.addEventListener("filter-error", (e) => (heard = e.detail.message));
+  lost.gl.getExtension("WEBGL_lose_context").loseContext();
+  await new Promise((r) => setTimeout(r, 200));
+  const afterLoss = await rejects(lost.renderBlob(source));
+  check("a lost context rejects renderBlob", afterLoss instanceof Error && /lost/.test(afterLoss.message), afterLoss && afterLoss.message);
+  check("a lost context rejects ready() and is announced", (await rejects(lost.ready())) instanceof Error && /lost/.test(heard));
+  lost.dispose();
+}
+
+// A shader that fails to link.
+{
+  const broken = document.createElement("texturize-filter");
+  broken.setAttribute("persist", "off");
+  const real = broken.createShader.bind(broken);
+  broken.createShader = (type) => real(type, "this is not GLSL");
+  document.body.appendChild(broken);
+  const failure = await rejects(broken.ready());
+  check("a shader failure rejects ready()", failure instanceof Error, failure && failure.message);
+  const render = await rejects(broken.renderBlob(source));
+  check("a shader failure rejects renderBlob, with no picture", render instanceof Error);
+  broken.dispose();
+}
+
+// An element that was never put in the page.
+{
+  const loose = document.createElement("texturize-filter");
+  check("ready() rejects off the page instead of waiting forever", (await rejects(loose.ready())) instanceof Error);
+}
+
+// dispose.
+{
+  const gl = el.gl;
+  const pending = el.renderBlob(source);
+  el.dispose();
+  check("dispose rejects a render that was under way", (await rejects(pending)) instanceof Error);
+  check("dispose frees the context", gl.isContextLost() && el.gl === null && el.program === null);
+  check("after dispose, ready() and renderBlob() reject",
+    (await rejects(el.ready())) instanceof Error && (await rejects(el.renderBlob(source))) instanceof Error);
+  el.remove();
+  document.body.appendChild(el);
+  await new Promise((r) => setTimeout(r, 300));
+  check("a disposed element stays disposed when put back", el.gl === null);
+}
+
+await fetch("/log", { method: "POST", body: JSON.stringify({ done: true, results }) });
+`;
+
+const page = `<!doctype html><meta charset="utf-8"><title>texturizer check</title>
+<script>
+const report = (error) => fetch("/log", { method: "POST", body: JSON.stringify({ error: String(error) }) });
+addEventListener("error", (e) => report((e.error && e.error.stack) || e.message || e), true);
+addEventListener("unhandledrejection", (e) => report((e.reason && e.reason.stack) || e.reason));
+</script>
+<script type="module">
+${pageScript}
+</script>`;
+
+function run() {
+  return new Promise((resolve, reject) => {
+    let chrome;
+    let timer;
+    const finish = (error, results) => {
+      clearTimeout(timer);
+      chrome?.kill();
+      server.close();
+      if (error) reject(error);
+      else resolve(results);
+    };
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url, "http://x");
+      if (req.method === "GET" && url.pathname === "/") {
+        res.writeHead(200, { "content-type": "text/html", "cache-control": "no-store" }).end(page);
+      } else if (req.method === "GET" && /^\/src\/[a-z-]+\.js$/.test(url.pathname)) {
+        res.writeHead(200, { "content-type": "text/javascript", "cache-control": "no-store" })
+          .end(readFileSync(join(ROOT, url.pathname.slice(1))));
+      } else if (req.method === "POST" && url.pathname === "/log") {
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          res.writeHead(204).end();
+          const message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          if (message.error) finish(new Error(message.error));
+          else if (message.done) finish(null, message.results);
+        });
+      } else {
+        res.writeHead(404).end();
+      }
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      chrome = spawn(findChrome(), [
+        "--headless=new",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${mkdtempSync(join(tmpdir(), "texturizer-check-"))}`,
+        `http://127.0.0.1:${server.address().port}/`,
+      ], { stdio: "ignore" });
+      chrome.on("error", (e) => finish(e));
+      timer = setTimeout(() => finish(new Error("Timed out after 180 s.")), 180_000);
+    });
+  });
+}
+
+const results = await run();
+let failed = 0;
+for (const { name, ok, detail } of results) {
+  if (!ok) failed++;
+  console.log(`${ok ? "ok  " : "FAIL"}  ${name}${!ok && detail ? `  (${detail})` : ""}`);
+}
+console.log(`\n${results.length - failed} of ${results.length} passed.`);
+process.exit(failed ? 1 : 0);

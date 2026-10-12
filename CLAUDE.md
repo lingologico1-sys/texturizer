@@ -11,9 +11,16 @@ the one third-party library and it is fetched on demand inside `loadJSZip()`
 rather than bundled.
 
 Everything is one Web Component, `<texturize-filter>`, defined in
-**`src/canvas-filter.js` (~3,400 lines)**. `src/main.js` is a 6-line side-effect
+**`src/canvas-filter.js` (~3,800 lines)**. `src/main.js` is a 6-line side-effect
 import that registers it. There is no backend — all processing is GPU-side in
 the browser.
+
+The settings schema is the second source file, **`src/preset.js`**: the list of
+controls, their defaults, the checks on a preset file, and `settingsHash`. It
+has **no browser dependencies and no imports, and must stay that way**:
+translator runs it on its server to check an uploaded preset, where
+`canvas-filter.js` (which extends `HTMLElement`) could never load.
+`canvas-filter.js` is an ES module that imports it.
 
 The component carries its own Shadow DOM, markup, and styles, because it was
 originally a Wix custom element dropped into a page it didn't control. That
@@ -26,18 +33,20 @@ Rough map, since it is one long class:
 
 | Lines | What |
 |---|---|
-| 1–26 | Module constants (`PREVIEW_SUPERSAMPLE`, build SHA, storage keys) |
-| 63–320 | Lifecycle — `constructor`, `connectedCallback`, `scheduleGraphicsBoot`, `disconnectedCallback`, `attributeChangedCallback` |
-| 318–1190 | `renderTemplate()` — the entire UI as a template string |
-| 1189–1330 | `cacheElements()`, `bindUiEvents()` |
-| 1321–1600 | Presets, batch/zip, color masks |
-| 1686–1830 | Colour picking (include/exclude chips) |
-| 1841–2530 | `initWebGL()` — **the GLSL lives here**, vertex at 1864, fragment at 1878 |
-| 2533–2700 | Shader compile/link, resize observer |
-| 2696–2860 | Image loading, object URLs, IndexedDB persistence |
-| 2861–3060 | Preview budget, canvas sizing, control sync, settings persistence |
-| 3075–3260 | `requestRender`, `renderCanvas`, `renderFullRes`, `updateDisplay` |
-| 3288–3380 | Download, filename, status, `emit` |
+| 1–55 | Imports from `preset.js`, module constants (`PREVIEW_SUPERSAMPLE`, build SHA, storage keys), `soon()` |
+| 55–325 | Lifecycle — `constructor`, `connectedCallback`, `scheduleGraphicsBoot`, `bootGraphics`, `disconnectedCallback`, `attributeChangedCallback` |
+| 326–1213 | `renderTemplate()` — the entire UI as a template string |
+| 1214–1353 | `cacheElements()`, `bindUiEvents()` |
+| 1354–1720 | Presets (with masks), `getPreset` / `applyPreset`, Export / Import, batch/zip |
+| 1722–1870 | Colour masks, version badge, fullscreen |
+| 1874–2030 | Colour picking (include/exclude chips), `processImageForBatch` |
+| 2031–2725 | `initWebGL()` — **the GLSL lives here** |
+| 2731–2870 | Shader compile/link, `failRenderer`, `ready()`, `dispose()` |
+| 2995–3160 | Image loading, object URLs |
+| 3160–3385 | Preview budget, canvas sizing, control sync, settings and IndexedDB persistence |
+| 3389–3510 | `requestRender`, `renderCanvas`, `drawFrame` |
+| 3512–3640 | `renderBlob` (the host's export), `decodeSource` |
+| 3640–3818 | `renderFullRes`, `updateDisplay`, download, filename, status, `emit` |
 
 The fragment shader inlines all nine texture styles across nine height taps.
 It is long and branchy on purpose — one program, no per-style recompile.
@@ -68,6 +77,37 @@ exists because IndexedDB cannot store an object URL's bytes — see the comment 
 compile-time literals, not variables — the guarded `typeof` checks at the top of
 `canvas-filter.js` are what keep the file loadable outside a Vite build.
 
+## The component inside translator
+
+translator (the owner's deck-making app) keeps a pinned copy of **both** source
+files and makes each lingomondo card's reveal face with it. Its manifest records
+this repo's commit and each file's sha256, and its checks compare the copy with
+this repo at that commit. So:
+
+- A change here does nothing to translator until its copy is refreshed. A
+  change to the shader or to `preset.js` then gives a new renderer identity
+  there; pictures already made are kept.
+- The host uses only this surface. Keep it working, and keep
+  `npm run check:browser` passing:
+  - `await el.ready()` — resolves once the shader has linked; rejects on a
+    compile or link failure, a lost context, or after `dispose()`.
+  - `el.getPreset(name)` / `el.applyPreset(obj)` — a v1 preset object (params
+    and masks). `applyPreset` returns `{ settingsHash, warnings }` and throws,
+    changing nothing, if the preset is refused. `el.currentSettingsHash()`.
+  - `await el.renderBlob(source, { type, quality, width, height })` — renders a
+    Blob or URL with the current settings, leaving the panel's own picture
+    alone. Resolves to `{ blob, type, width, height }` (`type` is what the
+    encoder really made). Rejects rather than hand back a blank picture. Calls
+    are taken one at a time.
+  - `el.dispose()` — frees the GPU. Removing the element does not.
+  - `persist="off"` — embedded mode: no `localStorage` or IndexedDB at all, and
+    the file picker, presets box and batch button are hidden.
+  - the `settings-change` event, and `image-data` for the panel's picture.
+- **A preset's masks are stored as r, g, b only.** Y/Cb/Cr are always worked
+  out from them (`rgbToYCbCr` in `preset.js`), never read from a file.
+- **The mask preview is a view aid, not a setting.** It is never saved, is not
+  in the hash, and `drawFrame` is told to leave it out of every export.
+
 ## Commands
 
 ```bash
@@ -75,9 +115,12 @@ npm run dev        # vite, http://localhost:5173
 npm run build
 npm run preview
 npm run pages:dev  # wrangler pages dev proxying 5173
+npm test           # src/preset.js in plain Node (no browser)
+npm run check:browser  # the component in headless Chrome, software WebGL
 ```
 
-There is no test suite and no linter configured.
+Both checks are dependency-free scripts (`node --test`, and a spawned Chrome;
+set `CHROME` to its path if it isn't found). There is no linter configured.
 
 **Do not run `npm run deploy`.** Pushing to `main` triggers
 `.github/workflows/deploy.yml`, which builds and deploys to Cloudflare Pages.

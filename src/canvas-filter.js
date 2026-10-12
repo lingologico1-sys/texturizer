@@ -1,7 +1,34 @@
+import {
+  CONTROL_CONFIG,
+  MAX_MASK_COLORS,
+  defaultParams,
+  makePreset,
+  normalizeSettings,
+  rgbToYCbCr,
+  settingsHash,
+  validatePreset
+} from "./preset.js";
+
 (function () {
   "use strict";
 
   const TAG_NAME = "texturize-filter";
+
+  // Stand-in for requestAnimationFrame where waiting must not stall: frames
+  // stop in a background tab, and a host app can be rendering a whole deck
+  // there. Whichever of the frame and the timer comes first runs the callback.
+  const soon = (callback) => {
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      callback();
+    };
+    const frame = requestAnimationFrame(run);
+    const timer = setTimeout(run, 200);
+  };
 
   // Injected by vite's `define` at build time (see vite.config.js). Guarded so
   // the element still works if the file is loaded outside the bundler.
@@ -56,7 +83,8 @@
         "masktolerance",
         "inktolerance",
         "image-data",
-        "export-request"
+        "export-request",
+        "persist"
       ];
     }
 
@@ -86,71 +114,10 @@
       // Object URL backing the currently loaded image, so we can revoke it.
       this.objectUrl = null;
 
-      this.params = {
-        texturetype: 0,
-        scale: 36,
-        depth: 0.65,
-        angle: 0,
-        intensity: 1,
-        soften: 0.25,
-        contrast: 1.08,
-        brightness: 1,
-        warp: 0,
-        colorscale: 0,
-        colordepth: 0,
-        shininess: 0,
-        lightazimuth: 127,
-        lightelevation: 46,
-        lighttint: 0,
-        ao: 0.5,
-        papertint: 0,
-        vignette: 0,
-        dyebleed: 0,
-        distressed: 0,
-        preserveskin: 0,
-        washcolor: "#6a11cb",
-        washintensity: 0,
-        sharpness: 0,
-        saturation: 1.0,
-        halftone: 0,
-        masktolerance: 8,
-        inktolerance: 80
-      };
-
-      this.controlConfig = {
-        texturetype: { type: "select", group: "Texture", label: "Texture Style", options: ["Canvas", "Paper", "Ink Wash", "Clay", "Linocut", "Leather", "Slate", "Mosaic", "Canvas 2"], value: 0, min: 0, max: 8, step: 1, suffix: "" },
-        scale: { type: "range", group: "Texture", label: "Scale", min: 4, max: 120, step: 1, value: 36, suffix: "" },
-        angle: { type: "range", group: "Texture", label: "Angle", min: -180, max: 180, step: 1, value: 0, suffix: "°" },
-        warp: { type: "range", group: "Texture", label: "Warp", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-
-        depth: { type: "range", group: "Lighting", label: "Depth", min: 0, max: 2, step: 0.01, value: 0.65, suffix: "" },
-        soften: { type: "range", group: "Lighting", label: "Soften", min: 0, max: 1, step: 0.01, value: 0.25, suffix: "" },
-        intensity: { type: "range", group: "Lighting", label: "Intensity", min: 0, max: 1.5, step: 0.01, value: 1, suffix: "" },
-        shininess: { type: "range", group: "Lighting", label: "Shininess", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-        ao: { type: "range", group: "Lighting", label: "Ambient Occlusion", min: 0, max: 1, step: 0.01, value: 0.5, suffix: "" },
-        lightazimuth: { type: "range", group: "Lighting", label: "Light Direction", min: -180, max: 180, step: 1, value: 127, suffix: "°" },
-        lightelevation: { type: "range", group: "Lighting", label: "Light Elevation", min: 5, max: 85, step: 1, value: 46, suffix: "°" },
-        lighttint: { type: "range", group: "Lighting", label: "Light Warmth", min: -1, max: 1, step: 0.01, value: 0, suffix: "" },
-
-        brightness: { type: "range", group: "Color", label: "Brightness", min: 0.2, max: 3, step: 0.01, value: 1, suffix: "" },
-        contrast: { type: "range", group: "Color", label: "Contrast", min: 0.5, max: 2, step: 0.01, value: 1.08, suffix: "" },
-        saturation: { type: "range", group: "Color", label: "Saturation", min: 0, max: 3, step: 0.01, value: 1.0, suffix: "" },
-        papertint: { type: "range", group: "Color", label: "Paper Tint", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-        colorscale: { type: "range", group: "Color", label: "Color → Scale", min: -1, max: 1, step: 0.01, value: 0, suffix: "" },
-        colordepth: { type: "range", group: "Color", label: "Color → Depth", min: -1, max: 1, step: 0.01, value: 0, suffix: "" },
-
-        vignette: { type: "range", group: "Effects", label: "Edge Vignette", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-        dyebleed: { type: "checkbox", group: "Effects", label: "Dye Bleed", min: 0, max: 1, step: 1, value: 0, suffix: "" },
-        distressed: { type: "checkbox", group: "Effects", label: "Distressed", min: 0, max: 1, step: 1, value: 0, suffix: "" },
-        preserveskin: { type: "checkbox", group: "Effects", label: "Preserve Skin", min: 0, max: 1, step: 1, value: 0, suffix: "" },
-        washcolor: { type: "color", group: "Effects", label: "Wash Color", value: "#6a11cb" },
-        washintensity: { type: "range", group: "Effects", label: "Wash Intensity", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-        sharpness: { type: "range", group: "Effects", label: "Sharpness", min: 0, max: 2, step: 0.01, value: 0, suffix: "" },
-        halftone: { type: "range", group: "Effects", label: "Halftone", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
-
-        masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" },
-        inktolerance: { type: "range", group: "Color Masks", label: "Black / Ink Tolerance", min: 0, max: 160, step: 1, value: 80, suffix: "" }
-      };
+      // The schema lives in preset.js so a host's server can check a preset
+      // with the same rules, without loading this file.
+      this.params = defaultParams();
+      this.controlConfig = CONTROL_CONFIG;
 
       this.groupOrder = ["Texture", "Lighting", "Color", "Effects"];
       // Rendered inside the custom Color Masks panel rather than as its own group.
@@ -187,7 +154,34 @@
       this.excludeAll = false;
       this.pickMode = null;
       this.pickInterval = null;
-      this.MAX_PICKED_COLORS = 32;
+      this.MAX_PICKED_COLORS = MAX_MASK_COLORS;
+      // A view aid, not a setting: never saved, never in a preset or an export.
+      this.maskPreview = false;
+      // Why the renderer can't be used, once it can't: a failed shader, a lost
+      // context, dispose(). ready() and renderBlob() reject with it.
+      this.rendererError = null;
+      this.disposed = false;
+      this.readyWaiters = [];
+      // renderBlob borrows the GL canvas; previews wait while this is set.
+      this.exportBusy = false;
+      this.renderQueue = Promise.resolve();
+      this.settingsChangeQueued = false;
+      this.boundExportPreset = this.handleExportPreset.bind(this);
+      this.boundImportClick = () => {
+        this.presetFileInput.value = "";
+        this.presetFileInput.click();
+      };
+      this.boundImportFile = this.handleImportPresetFile.bind(this);
+      this.boundMaskPreviewChange = () => {
+        this.maskPreview = this.maskPreviewCheckbox.checked;
+        this.requestRender();
+      };
+      this.boundContextLost = (event) => {
+        event.preventDefault();
+        if (!this.disposed) {
+          this.failRenderer("The graphics context was lost. Reload the page to go on.");
+        }
+      };
       this.boundExcludeAllChange = this.handleExcludeAllChange.bind(this);
       this.boundVersionBadgeClick = this.handleVersionBadgeClick.bind(this);
       this.boundFullscreenChange = this.handleFullscreenChange.bind(this);
@@ -239,31 +233,44 @@
 
       this.bootFrame = requestAnimationFrame(() => {
         this.bootFrame = 0;
-        if (!this.isConnected) {
-          return;
-        }
-
-        this.initWebGL();
-        this.setupResizeObserver();
-
-        // Deferring the context means an image can now arrive before there is
-        // anywhere to put it — an `image-data` attribute set right after the
-        // element connects, whose decode beat this frame. uploadImageTexture
-        // silently no-ops without a context, so redo it here.
-        if (this.image) {
-          this.uploadImageTexture();
-        }
-
-        this.resizeCanvasBackingStore();
-        this.requestRender();
-        this.isReady = true;
-
-        // Only fall back to the stored image if nothing was handed to us; the
-        // last session's picture must not replace one the host explicitly set.
-        if (!this.image) {
-          this.loadRecentImage();
-        }
+        this.bootGraphics();
       });
+    }
+
+    // Split from scheduleGraphicsBoot so ready() can boot without waiting for
+    // a frame that a background tab never delivers.
+    bootGraphics() {
+      if (!this.isConnected || this.gl || this.disposed) {
+        return;
+      }
+
+      this.initWebGL();
+      this.setupResizeObserver();
+
+      // Deferring the context means an image can now arrive before there is
+      // anywhere to put it — an `image-data` attribute set right after the
+      // element connects, whose decode beat this frame. uploadImageTexture
+      // silently no-ops without a context, so redo it here.
+      if (this.image) {
+        this.uploadImageTexture();
+      }
+
+      this.resizeCanvasBackingStore();
+      this.requestRender();
+      this.isReady = true;
+
+      // Only fall back to the stored image if nothing was handed to us; the
+      // last session's picture must not replace one the host explicitly set.
+      if (!this.image) {
+        this.loadRecentImage();
+      }
+    }
+
+    // True when a host embeds the component with persist="off": nothing is
+    // read from or written to this origin's storage, and the host owns the
+    // picture, so nothing in the panel can replace it.
+    get persistOff() {
+      return this.getAttribute("persist") === "off";
     }
 
     disconnectedCallback() {
@@ -309,6 +316,7 @@
         this.setParamFromAttribute(name, newValue);
         this.syncControl(name);
         this.requestRender();
+        this.notifySettingsChange();
         if (this.isReady) {
           this.saveRecentSettings();
         }
@@ -823,6 +831,14 @@
             opacity: 1;
           }
 
+          /* Embedded in a host app: the host owns the picture and the presets,
+             and the badge would name a build that was never built here. */
+          :host([persist="off"]) .file-picker,
+          :host([persist="off"]) .presets-container,
+          :host([persist="off"]) .version-badge {
+            display: none;
+          }
+
           :host([data-picking="true"]) img#originalImage {
             cursor: crosshair !important;
             outline: 2px dashed #0f766e;
@@ -1093,6 +1109,10 @@
                   <button id="includeColorButton" class="action-button" type="button">Include Color…</button>
                 </div>
                 ${maskControlsMarkup}
+                <label class="exclude-all-row" title="Masks pick colours, not areas, so they can catch things you didn't mean. Never part of a download.">
+                  <input id="maskPreviewCheckbox" type="checkbox" />
+                  <span>Show what the masks leave untextured</span>
+                </label>
                 <div id="excludedSection" class="chips-section">
                   <div class="chips-label">Excluded</div>
                   <div id="excludedChips" class="color-chips" data-empty-label="None"></div>
@@ -1115,6 +1135,11 @@
               <div class="presets-row">
                 <input id="presetNameInput" type="text" placeholder="Preset Name" class="preset-input" />
                 <button id="savePresetButton" class="action-button" type="button">Save</button>
+              </div>
+              <div class="presets-row">
+                <input id="presetFileInput" type="file" accept=".json,application/json" style="display:none;" />
+                <button id="exportPresetButton" class="action-button" type="button" style="flex:1;" title="Save the current settings and colour masks as a file">Export…</button>
+                <button id="importPresetButton" class="action-button" type="button" style="flex:1;" title="Load a preset file made with Export">Import…</button>
               </div>
               <div class="presets-row">
                 <input id="batchFolderInput" type="file" webkitdirectory directory multiple style="display:none;" />
@@ -1213,6 +1238,10 @@
       this.includedChips = this.shadowRoot.getElementById("includedChips");
       this.excludeAllCheckbox = this.shadowRoot.getElementById("excludeAllCheckbox");
       this.excludedSection = this.shadowRoot.getElementById("excludedSection");
+      this.maskPreviewCheckbox = this.shadowRoot.getElementById("maskPreviewCheckbox");
+      this.presetFileInput = this.shadowRoot.getElementById("presetFileInput");
+      this.exportPresetButton = this.shadowRoot.getElementById("exportPresetButton");
+      this.importPresetButton = this.shadowRoot.getElementById("importPresetButton");
       this.versionBadge = this.shadowRoot.getElementById("versionBadge");
       this.fsOriginalButton = this.shadowRoot.getElementById("fsOriginalButton");
       this.fsCanvasButton = this.shadowRoot.getElementById("fsCanvasButton");
@@ -1247,6 +1276,10 @@
       this.excludeColorButton.addEventListener("click", this.boundExcludeColorClick);
       this.includeColorButton.addEventListener("click", this.boundIncludeColorClick);
       this.excludeAllCheckbox.addEventListener("change", this.boundExcludeAllChange);
+      this.maskPreviewCheckbox.addEventListener("change", this.boundMaskPreviewChange);
+      this.exportPresetButton.addEventListener("click", this.boundExportPreset);
+      this.importPresetButton.addEventListener("click", this.boundImportClick);
+      this.presetFileInput.addEventListener("change", this.boundImportFile);
       this.fsExcludeButton.addEventListener("click", this.boundExcludeColorClick);
       this.fsIncludeButton.addEventListener("click", this.boundIncludeColorClick);
       // Drives the same attribute as the sidebar slider, so syncControl keeps
@@ -1319,6 +1352,11 @@
     }
 
     loadPresetsFromStorage() {
+      if (this.persistOff) {
+        this.presets = {};
+        return;
+      }
+
       try {
         const stored = localStorage.getItem("canvas-filter-presets");
         if (stored) {
@@ -1333,6 +1371,8 @@
     }
 
     savePresetsToStorage() {
+      if (this.persistOff) return;
+
       try {
         localStorage.setItem("canvas-filter-presets", JSON.stringify(this.presets));
       } catch (e) {
@@ -1363,7 +1403,9 @@
       Object.keys(this.controlConfig).forEach(key => {
         currentConfig[key] = this.params[key];
       });
-      
+      // The masks ride along as one extra key, which older builds ignore.
+      currentConfig.masks = this.plainMasks();
+
       this.presets[name] = currentConfig;
       this.savePresetsToStorage();
       this.updatePresetDropdown();
@@ -1388,8 +1430,150 @@
           this.setAttribute(key, config[key]);
         }
       });
+
+      // Presets saved before masks were part of them have none, and leave the
+      // current masks alone, as loading a preset always used to.
+      let withMasks = false;
+      if (config.masks) {
+        const { settings } = normalizeSettings({ params: defaultParams(), masks: config.masks });
+        if (settings) {
+          this.setMasks(settings.masks);
+          withMasks = true;
+        }
+      }
+
       this.requestRender();
-      this.setStatus(`Loaded preset "${name}".`);
+      this.setStatus(`Loaded preset "${name}"${withMasks ? " with its colour masks" : ""}.`);
+    }
+
+    // The masks as a preset stores them: r, g and b only.
+    plainMasks() {
+      const rgb = (list) => list.map((c) => ({ r: c.r, g: c.g, b: c.b }));
+      return {
+        exclude: rgb(this.excludedColors),
+        include: rgb(this.includedColors),
+        excludeAll: this.excludeAll
+      };
+    }
+
+    setMasks(masks) {
+      const full = (list) => list.map((c) => ({ r: c.r, g: c.g, b: c.b, ...rgbToYCbCr(c.r, c.g, c.b) }));
+      if (this.pickMode) this.finishColorPick(false);
+      this.excludedColors = full(masks.exclude);
+      this.includedColors = full(masks.include);
+      this.excludeAll = !!masks.excludeAll;
+      this.updateChipsUI();
+      this.saveColorMasks();
+      this.requestRender();
+      this.notifySettingsChange();
+    }
+
+    // Tell a host the look changed, once per burst: applying a preset sets
+    // some thirty attributes in a row.
+    notifySettingsChange() {
+      if (this.settingsChangeQueued) return;
+      this.settingsChangeQueued = true;
+      queueMicrotask(() => {
+        this.settingsChangeQueued = false;
+        this.emit("settings-change", {});
+      });
+    }
+
+    // The current look as a v1 preset object (see preset.js).
+    getPreset(name) {
+      const { settings } = normalizeSettings({ params: { ...this.params }, masks: this.plainMasks() });
+      return makePreset({
+        name: name || (this.presetSelect && this.presetSelect.value) || "",
+        build: BUILD_SHA,
+        settings
+      });
+    }
+
+    // Apply a v1 preset object: params and masks together. Throws, changing
+    // nothing, if the preset is refused. Returns { settingsHash, warnings }.
+    applyPreset(preset) {
+      const result = validatePreset(preset);
+      if (!result.ok) {
+        throw new Error(result.errors.join(" "));
+      }
+
+      Object.entries(result.preset.params).forEach(([key, value]) => {
+        this.setAttribute(key, String(value));
+      });
+      this.setMasks(result.preset.masks);
+
+      return { settingsHash: result.settingsHash, warnings: result.warnings };
+    }
+
+    // The hash that names the current look.
+    currentSettingsHash() {
+      return settingsHash({ params: { ...this.params }, masks: this.plainMasks() });
+    }
+
+    handleExportPreset() {
+      const name = this.presetNameInput.value.trim() || this.presetSelect.value || "Untitled";
+      const preset = this.getPreset(name);
+      const fileName = (name.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "preset")
+        + ".texturizer-preset.json";
+
+      const url = URL.createObjectURL(new Blob([JSON.stringify(preset, null, 2) + "\n"], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.rel = "noopener";
+      link.style.display = "none";
+      this.shadowRoot.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        link.remove();
+      }, 1000);
+
+      this.setStatus(`Exported "${preset.name}" with its colour masks as ${fileName}.`);
+    }
+
+    async handleImportPresetFile(event) {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = "";
+      if (!file) return;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(await file.text());
+      } catch (e) {
+        this.setStatus(`${file.name} is not a preset file (it isn't valid JSON).`, true);
+        return;
+      }
+
+      this.importPreset(parsed);
+    }
+
+    // Take a preset file's contents: check it, keep it under its name and
+    // apply it. Returns true if it was imported.
+    importPreset(parsed) {
+      const result = validatePreset(parsed);
+      if (!result.ok) {
+        this.setStatus(`Not imported: ${result.errors.join(" ")}`, true);
+        return false;
+      }
+
+      const name = result.preset.name;
+      if (this.presets[name] && !window.confirm(`A preset named "${name}" already exists. Replace it?`)) {
+        this.setStatus(`Import cancelled; "${name}" was kept as it was.`);
+        return false;
+      }
+
+      this.presets[name] = { ...result.preset.params, masks: result.preset.masks };
+      this.savePresetsToStorage();
+      this.updatePresetDropdown();
+      this.presetSelect.value = name;
+      this.deletePresetButton.disabled = false;
+      this.applyPreset(result.preset);
+
+      // Warnings are never swallowed: they stay in the status line.
+      const notes = result.warnings.length ? ` Note: ${result.warnings.join(" ")}` : "";
+      this.setStatus(`Imported and loaded "${name}".${notes}`, result.warnings.length > 0);
+      return true;
     }
 
     handleDeletePreset() {
@@ -1419,7 +1603,7 @@
     }
 
     handleBatchClick() {
-      if (this.batchRunning) return;
+      if (this.batchRunning || this.persistOff) return;
       this.batchFolderInput.value = "";
       this.batchFolderInput.click();
     }
@@ -1438,7 +1622,7 @@
         return;
       }
 
-      if (!this.gl || !this.program) {
+      if (!this.gl || !this.program || this.exportBusy) {
         this.setStatus("WebGL not ready yet — try again in a moment.", true);
         event.target.value = "";
         return;
@@ -1536,6 +1720,8 @@
     }
 
     loadColorMasks() {
+      if (this.persistOff) return;
+
       try {
         const raw = localStorage.getItem("canvas-filter-color-masks");
         if (!raw) return;
@@ -1552,6 +1738,8 @@
     }
 
     saveColorMasks() {
+      if (this.persistOff) return;
+
       try {
         localStorage.setItem("canvas-filter-color-masks", JSON.stringify({
           exclude: this.excludedColors,
@@ -1562,10 +1750,7 @@
     }
 
     rgbToYCbCr(r, g, b) {
-      const y = 0.299 * r + 0.587 * g + 0.114 * b;
-      const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
-      const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-      return { y, cb, cr };
+      return rgbToYCbCr(r, g, b);
     }
 
     updateChipsUI() {
@@ -1599,7 +1784,7 @@
 
       let seen = null;
       try {
-        seen = localStorage.getItem(SEEN_BUILD_KEY);
+        seen = this.persistOff ? null : localStorage.getItem(SEEN_BUILD_KEY);
       } catch (e) {}
 
       const when = BUILD_TIME ? new Date(BUILD_TIME).toLocaleString() : "unknown";
@@ -1616,6 +1801,8 @@
     }
 
     markBuildSeen() {
+      if (this.persistOff) return;
+
       try {
         localStorage.setItem(SEEN_BUILD_KEY, BUILD_SHA);
       } catch (e) {}
@@ -1676,6 +1863,7 @@
       this.updateExcludeAllUI();
       this.saveColorMasks();
       this.requestRender();
+      this.notifySettingsChange();
       this.setStatus(
         this.excludeAll
           ? "All colors excluded — use “Include Color…” to texturize specific colors."
@@ -1781,6 +1969,7 @@
       this.updateChipsUI();
       this.saveColorMasks();
       this.requestRender();
+      this.notifySettingsChange();
       return evicted;
     }
 
@@ -1791,6 +1980,7 @@
       this.updateChipsUI();
       this.saveColorMasks();
       this.requestRender();
+      this.notifySettingsChange();
     }
 
     async processImageForBatch(file) {
@@ -1853,12 +2043,12 @@
       });
 
       if (!gl) {
-        this.setStatus("WebGL2 is not available in this browser.", true);
-        this.emit("filter-error", { message: "WebGL2 is not available in this browser." });
+        this.failRenderer("WebGL2 is not available in this browser.");
         return;
       }
 
       this.gl = gl;
+      this.glCanvas.addEventListener("webglcontextlost", this.boundContextLost);
       this.maxTextureSize = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096);
 
       const vertexShaderSource = `#version 300 es
@@ -1916,6 +2106,7 @@
         uniform float u_sharpness;
         uniform float u_saturation;
         uniform float u_halftone;
+        uniform bool u_maskpreview;
 
         in vec2 v_uv;
         out vec4 outColor;
@@ -2490,6 +2681,13 @@
             finalColor = mix(finalColor, colored, u_washintensity * (1.0 - protectMask));
           }
 
+          // A view aid only: tint what the colour masks keep out of the
+          // texture. Skin protection is left out; it has its own switch.
+          if (u_maskpreview) {
+            float masked = clamp(excludeW - includeW, 0.0, 1.0);
+            finalColor = mix(finalColor, vec3(1.0, 0.1, 0.75), masked * 0.65);
+          }
+
           outColor = vec4(finalColor, source.a);
         }
       `;
@@ -2539,16 +2737,19 @@
           return;
         }
 
+        if (gl.isContextLost()) {
+          return;
+        }
+
         if (parallel && !gl.getProgramParameter(program, COMPLETION_STATUS_KHR)) {
-          requestAnimationFrame(poll);
+          soon(poll);
           return;
         }
 
         if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
           const message = this.shaderErrorMessage(program, vertexShader, fragmentShader);
           gl.deleteProgram(program);
-          this.setStatus(message, true);
-          this.emit("filter-error", { message });
+          this.failRenderer(message);
           return;
         }
 
@@ -2557,7 +2758,102 @@
         this.finishProgramInit(program);
       };
 
-      requestAnimationFrame(poll);
+      soon(poll);
+    }
+
+    // The renderer is unusable from here on. Everyone waiting on ready() or a
+    // renderBlob() hears why, instead of getting a blank picture.
+    failRenderer(message) {
+      this.rendererError = new Error(message);
+      this.setStatus(message, true);
+      this.emit("filter-error", { message });
+      this.settleReady();
+    }
+
+    settleReady() {
+      const waiters = this.readyWaiters;
+      this.readyWaiters = [];
+      waiters.forEach(({ resolve, reject }) => {
+        if (this.rendererError) reject(this.rendererError);
+        else resolve();
+      });
+    }
+
+    // Resolves once there is a context and the shader has linked: the point
+    // from which a render is real. Rejects if the shader fails to compile or
+    // link, the context is lost, or the element was disposed. `isReady` is not
+    // this: it turns true while the shader may still be linking.
+    ready() {
+      if (this.rendererError) {
+        return Promise.reject(this.rendererError);
+      }
+
+      if (this.program) {
+        return Promise.resolve();
+      }
+
+      if (!this.isConnected || !this.hasBooted) {
+        return Promise.reject(new Error("The texturizer must be in the page before it can render."));
+      }
+
+      if (!this.gl) {
+        if (this.bootFrame) {
+          cancelAnimationFrame(this.bootFrame);
+          this.bootFrame = 0;
+        }
+        this.bootGraphics();
+        if (this.rendererError) {
+          return Promise.reject(this.rendererError);
+        }
+      }
+
+      return new Promise((resolve, reject) => {
+        this.readyWaiters.push({ resolve, reject });
+      });
+    }
+
+    // Free everything the GPU holds. Removing the element does not do this
+    // (see disconnectedCallback), so a host that is finished must call it.
+    // The element cannot be used afterwards.
+    dispose() {
+      if (this.disposed) {
+        return;
+      }
+
+      this.disposed = true;
+      this.rendererError = new Error("The texturizer was disposed.");
+      this.settleReady();
+      this.disconnectedCallback();
+      if (this.pickMode) this.finishColorPick(false);
+      document.removeEventListener("fullscreenchange", this.boundFullscreenChange);
+
+      const gl = this.gl;
+      if (gl) {
+        gl.deleteTexture(this.texture);
+        gl.deleteProgram(this.program);
+        gl.deleteVertexArray(this.vao);
+        gl.deleteBuffer(this.vertexBuffer);
+        const lose = gl.getExtension("WEBGL_lose_context");
+        if (lose) lose.loseContext();
+      }
+
+      if (this.glCanvas) {
+        this.glCanvas.removeEventListener("webglcontextlost", this.boundContextLost);
+        this.glCanvas.width = 1;
+        this.glCanvas.height = 1;
+      }
+
+      this.gl = null;
+      this.program = null;
+      this.vao = null;
+      this.texture = null;
+      this.vertexBuffer = null;
+      this.image = null;
+      this.textureSource = null;
+      this.imageLoadToken++;
+      if (this.originalImage) this.originalImage.removeAttribute("src");
+      this.adoptObjectUrl(null);
+      this.removeAttribute("data-has-image");
     }
 
     shaderErrorMessage(program, vertexShader, fragmentShader) {
@@ -2615,13 +2911,15 @@
         uWashColor: gl.getUniformLocation(this.program, "u_washcolor"),
         uSharpness: gl.getUniformLocation(this.program, "u_sharpness"),
         uSaturation: gl.getUniformLocation(this.program, "u_saturation"),
-        uHalftone: gl.getUniformLocation(this.program, "u_halftone")
+        uHalftone: gl.getUniformLocation(this.program, "u_halftone"),
+        uMaskPreview: gl.getUniformLocation(this.program, "u_maskpreview")
       };
 
       this.vao = gl.createVertexArray();
       gl.bindVertexArray(this.vao);
 
       const vertexBuffer = gl.createBuffer();
+      this.vertexBuffer = vertexBuffer;
       gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
 
       const quad = new Float32Array([
@@ -2655,6 +2953,7 @@
       // Anything that asked to draw while the shader was still linking was
       // silently dropped by renderCanvas, so ask again now.
       this.requestRender();
+      this.settleReady();
     }
 
     setupResizeObserver() {
@@ -2696,7 +2995,7 @@
     handleFileChange(event) {
       const file = event.target.files && event.target.files[0];
 
-      if (!file) {
+      if (!file || this.persistOff) {
         return;
       }
 
@@ -2871,7 +3170,8 @@
     }
 
     resizeCanvasBackingStore() {
-      if (!this.glCanvas) {
+      // renderBlob has sized the canvas for its own picture; leave it be.
+      if (!this.glCanvas || this.exportBusy) {
         return;
       }
 
@@ -2918,13 +3218,16 @@
       }
 
       if (config.type === "color") {
-        this.params[name] = rawValue || config.value;
+        this.params[name] = /^#[0-9a-f]{6}$/i.test(rawValue || "") ? rawValue.toLowerCase() : config.value;
         return;
       }
 
       const numeric = Number(rawValue);
       const value = Number.isFinite(numeric) ? numeric : config.value;
-      this.params[name] = Math.min(config.max, Math.max(config.min, value));
+      const clamped = Math.min(config.max, Math.max(config.min, value));
+      // Checkboxes and the style list are whole numbers; a fraction from a
+      // host's attribute would name no style at all.
+      this.params[name] = config.type === "range" ? clamped : Math.round(clamped);
     }
 
     syncControl(name) {
@@ -2975,11 +3278,14 @@
       this.updateChipsUI();
       this.saveColorMasks();
       this.requestRender();
+      this.notifySettingsChange();
 
       this.setStatus(this.image ? "Controls and colour masks reset." : "Choose an image to begin.");
     }
 
     saveRecentSettings() {
+      if (this.persistOff) return;
+
       const currentState = {};
       Object.keys(this.controlConfig).forEach(key => {
         currentState[key] = this.params[key];
@@ -2992,6 +3298,8 @@
     }
 
     loadRecentSettings() {
+      if (this.persistOff) return;
+
       try {
         const stored = localStorage.getItem("canvas-filter-recent-settings");
         if (stored) {
@@ -3024,6 +3332,8 @@
     // Stores the image as a Blob. A data URL would be a third larger and would
     // have to be base64-decoded on the main thread on every subsequent load.
     async saveImageToIndexedDB(source, filename) {
+      if (this.persistOff) return;
+
       try {
         const blob = typeof source === "string" ? await (await fetch(source)).blob() : source;
         const db = await this.initIndexedDB();
@@ -3036,6 +3346,8 @@
     }
 
     async loadRecentImage() {
+      if (this.persistOff) return;
+
       try {
         const db = await this.initIndexedDB();
         const tx = db.transaction("images", "readonly");
@@ -3062,6 +3374,8 @@
     }
 
     async clearImageFromIndexedDB() {
+      if (this.persistOff) return;
+
       try {
         const db = await this.initIndexedDB();
         const tx = db.transaction("images", "readwrite");
@@ -3084,14 +3398,28 @@
     }
 
     renderCanvas() {
-      const gl = this.gl;
-
-      if (!gl || !this.program || !this.vao || !this.glCanvas) {
+      // While renderBlob holds the canvas the preview waits; renderBlob asks
+      // for a fresh frame when it is done.
+      if (!this.gl || !this.program || !this.vao || !this.glCanvas || this.exportBusy) {
         return;
       }
 
       this.resizeCanvasBackingStore();
+      // The mask tint is for the preview only; an export never carries it.
+      this.drawFrame(this.texture, !!this.image, this.maskPreview && !this.fullResRender);
 
+      // Reading back from the GL canvas blocks the main thread until the draw
+      // has actually finished. Worth it for the preview; wasted work during an
+      // export, whose frame never reaches the screen.
+      if (!this.fullResRender) {
+        this.updateDisplay();
+      }
+    }
+
+    // One frame of `texture` with the current settings, at whatever size the
+    // GL canvas is now.
+    drawFrame(texture, hasImage, maskPreview) {
+      const gl = this.gl;
       const width = this.glCanvas.width;
       const height = this.glCanvas.height;
 
@@ -3103,7 +3431,7 @@
       gl.bindVertexArray(this.vao);
 
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
 
       gl.uniform1i(this.locations.uImage, 0);
       gl.uniform2f(this.locations.uResolution, width, height);
@@ -3151,7 +3479,8 @@
       gl.uniform1i(this.locations.uIncludedCount, inCount);
       gl.uniform3fv(this.locations.uIncludedColors, pack(this.includedColors, inCount));
 
-      gl.uniform1i(this.locations.uHasImage, this.image ? 1 : 0);
+      gl.uniform1i(this.locations.uHasImage, hasImage ? 1 : 0);
+      gl.uniform1i(this.locations.uMaskPreview, maskPreview ? 1 : 0);
       gl.uniform1i(this.locations.uTextureType, this.params.texturetype);
 
       gl.uniform1f(this.locations.uWashIntensity, this.params.washintensity);
@@ -3171,13 +3500,126 @@
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);
+    }
 
-      // Reading back from the GL canvas blocks the main thread until the draw
-      // has actually finished. Worth it for the preview; wasted work during an
-      // export, whose frame never reaches the screen.
-      if (!this.fullResRender) {
-        this.updateDisplay();
+    // Render `source` (a Blob, or a URL this page may read) with the current
+    // settings and encode it. The panel's own picture and settings are left
+    // exactly as they were. Resolves to { blob, type, width, height }, where
+    // `type` is what the encoder really produced: a browser that can't make
+    // the type asked for falls back to PNG. Rejects, with no picture, on a
+    // decode failure, a missing program, a lost context or an empty encode.
+    // Calls are taken one at a time, in order.
+    renderBlob(source, options = {}) {
+      const run = () => this.renderBlobNow(source, options);
+      const result = this.renderQueue.then(run, run);
+      this.renderQueue = result.catch(() => {});
+      return result;
+    }
+
+    async renderBlobNow(source, { type = "image/png", quality, width, height } = {}) {
+      await this.ready();
+      const { image, release } = await this.decodeSource(source);
+      let texture = null;
+      this.exportBusy = true;
+
+      try {
+        // Decoding took a while; the renderer may have gone in the meantime.
+        if (this.rendererError) {
+          throw this.rendererError;
+        }
+
+        const gl = this.gl;
+        const textureSource = this.makeTextureSource(image);
+        const outWidth = Math.round(width || image.naturalWidth);
+        const outHeight = Math.round(height || image.naturalHeight);
+        if (!(outWidth > 0 && outHeight > 0)) {
+          throw new Error("The picture has no size to render at.");
+        }
+
+        if (this.animationFrame) {
+          cancelAnimationFrame(this.animationFrame);
+          this.animationFrame = 0;
+        }
+
+        texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textureSource);
+
+        this.glCanvas.width = outWidth;
+        this.glCanvas.height = outHeight;
+        // A browser short of memory hands back a smaller buffer than asked.
+        if (gl.drawingBufferWidth !== outWidth || gl.drawingBufferHeight !== outHeight) {
+          throw new Error(`This browser could not render at ${outWidth} × ${outHeight}.`);
+        }
+
+        this.drawFrame(texture, true, false);
+        gl.finish();
+
+        if (gl.isContextLost()) {
+          throw new Error("The graphics context was lost while rendering.");
+        }
+
+        const glError = gl.getError();
+        if (glError !== gl.NO_ERROR) {
+          throw new Error(`The render failed (WebGL error ${glError}).`);
+        }
+
+        const blob = await new Promise((resolve) => {
+          this.glCanvas.toBlob(resolve, type, quality);
+        });
+
+        if (!blob || blob.size === 0) {
+          throw new Error("The browser could not encode the picture.");
+        }
+
+        if (this.rendererError) {
+          throw this.rendererError;
+        }
+
+        return { blob, type: blob.type, width: outWidth, height: outHeight };
+      } finally {
+        if (texture && this.gl) {
+          this.gl.deleteTexture(texture);
+        }
+        release();
+        this.exportBusy = false;
+        if (this.gl) {
+          this.restorePreviewRes();
+        }
       }
+    }
+
+    decodeSource(source) {
+      const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
+      if (!isBlob && typeof source !== "string") {
+        return Promise.reject(new Error("renderBlob needs a Blob or a URL."));
+      }
+
+      const url = isBlob ? URL.createObjectURL(source) : source;
+      const release = () => {
+        if (isBlob) URL.revokeObjectURL(url);
+      };
+
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        // Without this a picture from another origin loads but can't be read
+        // back, and the export would fail later with a less useful message.
+        if (!isBlob && !/^(blob|data):/i.test(url)) {
+          image.crossOrigin = "anonymous";
+        }
+        image.onload = () => resolve({ image, release });
+        image.onerror = () => {
+          release();
+          reject(new Error("Could not decode the picture."));
+        };
+        image.src = url;
+      });
     }
 
     // Render one frame at native image resolution for export. The caller must
@@ -3292,7 +3734,7 @@
         return;
       }
 
-      if (!this.program) {
+      if (!this.program || this.exportBusy) {
         this.setStatus("Still preparing the filter — try again in a moment.", true);
         return;
       }

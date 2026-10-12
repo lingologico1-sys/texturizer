@@ -15,7 +15,10 @@ There is no backend — all processing happens in the browser on the GPU.
 - Color grading (brightness, contrast, saturation, paper tint, color-driven scale/depth)
 - Effects (vignette, dye bleed, distressed, halftone, sharpness, color wash, preserve-skin)
 - Color masks: include/exclude specific picked colors from the effect
-- Named presets (saved to `localStorage`)
+- Named presets (saved to `localStorage`), each with its colour masks
+- Export / Import a preset as a file (`*.texturizer-preset.json`, format v1),
+  to carry a look to another browser or into translator
+- A mask preview that tints what the colour masks leave untextured
 - Batch convert a whole folder to a downloaded `.zip` (JSZip loaded on demand)
 - Last image + settings restored across reloads (IndexedDB / `localStorage`)
 
@@ -54,6 +57,8 @@ npm run deploy
 index.html              mounts <texturize-filter>
 src/main.js             entry; imports styles + registers the component
 src/canvas-filter.js    the Web Component (WebGL2 shader + full UI)
+src/preset.js           the settings schema, preset-file checks and settings hash (no browser needed)
+test/, scripts/         npm test, npm run check:browser
 src/style.css           page chrome around the element
 wrangler.toml           Cloudflare Pages config
 .github/workflows/      build + deploy on push to main

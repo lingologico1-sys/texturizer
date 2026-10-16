@@ -52,6 +52,12 @@ import {
   const RELIEF_TAP = 1.0;
   const RELIEF_BLUR = 1.25;
   const RELIEF_STRENGTH = 3.6;
+  // Glow, in the same reference pixels: how far its whites spread, and how
+  // much the copy they're picked from is blurred first (a little, so a small
+  // white like a tooth still counts).
+  const GLOW_RADIUS = 7.0;
+  const GLOW_PICK = 1.0;
+
   // A number as GLSL wants a float, decimal point and all.
   const glslFloat = (x) => x.toFixed(6);
 
@@ -94,6 +100,7 @@ import {
         "sharpness",
         "saturation",
         "halftone",
+        "glow",
         "masktolerance",
         "inktolerance",
         "image-data",
@@ -2144,6 +2151,7 @@ import {
         uniform float u_sharpness;
         uniform float u_saturation;
         uniform float u_halftone;
+        uniform float u_glow;
         uniform bool u_maskpreview;
 
         in vec2 v_uv;
@@ -2621,6 +2629,36 @@ import {
           return 1.0 - smoothstep(tol, tol * 2.25, dist);
         }
 
+        // Glow's bloom: the picture's whites, spread. Each tap picks whites from
+        // a lightly blurred copy before they're averaged, so small ones (teeth,
+        // the whites of eyes) still count, and only near-neutral brights count
+        // at all, so a bright coloured field doesn't wash its colour over
+        // everything round it.
+        vec3 glowAt(vec2 uv) {
+          float shortSide = min(u_resolution.x, u_resolution.y);
+          vec2 unit = shortSide / max(u_resolution, vec2(1.0)) / ${glslFloat(RELIEF_REFERENCE)};
+          vec2 source = vec2(textureSize(u_imageMip, 0));
+          float lod = log2(max(${glslFloat(GLOW_PICK / RELIEF_REFERENCE)} * min(source.x, source.y), 1.0));
+          vec3 sum = vec3(0.0);
+          float total = 0.0;
+          for (int ring = 0; ring <= 2; ring++) {
+            float radius = ${glslFloat(GLOW_RADIUS)} * float(ring) / 2.0;
+            int taps = ring == 0 ? 1 : 8;
+            float weight = ring == 0 ? 1.5 : (ring == 1 ? 1.0 : 0.6);
+            for (int i = 0; i < 8; i++) {
+              if (i >= taps) break;
+              float a = (float(i) + 0.5 * float(ring)) * PI / 4.0;
+              vec3 c = textureLod(u_imageMip, uv + vec2(cos(a), sin(a)) * radius * unit, lod).rgb;
+              float luma = dot(c, vec3(0.299, 0.587, 0.114));
+              float chroma = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+              float white = smoothstep(0.72, 0.95, luma) * (1.0 - smoothstep(0.15, 0.5, chroma));
+              sum += c * white * weight;
+              total += weight;
+            }
+          }
+          return sum / total;
+        }
+
         float computeAO(vec2 uv, vec2 original_uv, float hc) {
           vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
           float r = 4.5 * sampleScale();
@@ -2817,6 +2855,17 @@ import {
             final_hsv.y = wash_hsv.y;
             vec3 colored = hsv2rgb(final_hsv);
             finalColor = mix(finalColor, colored, u_washintensity * (1.0 - protectMask));
+          }
+
+          // Glow: the whites bloom softly, in the light's own colour (Light
+          // Warmth warms it), screened so it only lightens and never passes
+          // white. The middle of the picture lifts a little too, by scaling
+          // rather than adding white, so its colours keep their saturation.
+          if (u_glow > 0.0) {
+            vec3 bloom = glowAt(v_uv) * lightColor * (u_glow * 1.4);
+            finalColor = 1.0 - (1.0 - finalColor) * (1.0 - clamp(bloom, 0.0, 1.0));
+            float centre = 1.0 - smoothstep(0.1, 1.15, length((v_uv - 0.5) * 2.0));
+            finalColor = min(finalColor * (1.0 + centre * 0.10 * u_glow), vec3(1.0));
           }
 
           // A view aid only: tint what the colour masks keep out of the
@@ -3066,6 +3115,7 @@ import {
         uSharpness: gl.getUniformLocation(this.program, "u_sharpness"),
         uSaturation: gl.getUniformLocation(this.program, "u_saturation"),
         uHalftone: gl.getUniformLocation(this.program, "u_halftone"),
+        uGlow: gl.getUniformLocation(this.program, "u_glow"),
         uMaskPreview: gl.getUniformLocation(this.program, "u_maskpreview")
       };
 
@@ -3660,6 +3710,7 @@ import {
       gl.uniform1f(this.locations.uSharpness, this.params.sharpness);
       gl.uniform1f(this.locations.uSaturation, this.params.saturation);
       gl.uniform1f(this.locations.uHalftone, this.params.halftone);
+      gl.uniform1f(this.locations.uGlow, this.params.glow);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);

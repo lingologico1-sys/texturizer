@@ -43,12 +43,32 @@ then the style that combines them.
       and 3.9, tone 3.9–4.9. Groove depth in the height is 0.033: anything
       sharper than a pixel saturates the lighting, which is why the first
       tries came out as hard black-and-white strips.
-- [ ] 4. Sample comparison script; tune against A2 / B2 at sample size and
-      at full size downscaled
+- [x] 4. Sample comparison script; tune against A2 / B2 at sample size and
+      at full size downscaled. Done 2026-10-16: `scripts/compare-samples.mjs`
+      renders a look (QUICK=1 for sample size only), `samples/measure.py`
+      reports. The settings-hash rule ("step 4" in the design) came with
+      step 1. Looks to import: `samples/presets/concrete.texturizer-preset.json`
+      (the samples' match) and `letterpress.texturizer-preset.json` (Paper,
+      Relief −0.5, Paper Tint 0.3, Lighten 0.25).
 - [ ] 5. Checks pass, commit, push (deploys Texturizer); owner judges crops
-      and a front → reveal sequence on a phone
+      and a front → reveal sequence on a phone. Checks, commits and pushes
+      done 2026-10-16 (`npm test` 26, `check:browser` 64, `check:pixels` 71).
+      Shimmer, in headless Chrome: the full-size Concrete render shown at 360,
+      390, 393, 412 and 430 CSS px, at pixel ratios 2, 2.625 and 3, still and
+      shifted by 0.37 px: large-scale banding on the plain background 0.9–1.4
+      levels in all 30, never above an ideal downscale of the same picture
+      (mean −0.21), so no moiré. **Left for the owner:** judging the looks,
+      and the phone itself.
 - [ ] 6. Owner runs the time-per-card check on the Chromebook
-- [ ] 7. Glow (warm, soft highlight bloom): designed below, built after 1–6
+- [x] 7. Glow (warm, soft highlight bloom). Prototype built 2026-10-16,
+      ahead of the owner's step 5/6 since it doesn't depend on them. Whites
+      are picked tap by tap (16 taps in two rings, 7 reference px out) from
+      a copy blurred by 1 reference px, so teeth and eyes count, and only
+      near-neutral brights count; screened in the light's colour; the
+      middle lifts by scaling (10% at 1.0), not by adding white. At 1.0 on
+      the samples: picture mean +4.7 to +5.8 levels, background hue within
+      0.005 and saturation within 0.013, no value anywhere darker. **Left
+      for the owner:** whether it reads as rewarding.
 - [ ] 8. (Later, the owner's call) refresh translator's pinned copy
 
 ## Why this exists: the reveal face of a card

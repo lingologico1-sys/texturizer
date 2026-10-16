@@ -15,7 +15,8 @@ There is no backend — all processing happens in the browser on the GPU.
   Picture Relief: the drawing's own lines raised, or pressed in like letterpress)
 - Color grading (Lighten, brightness, contrast, saturation, paper tint,
   color-driven scale/depth)
-- Effects (vignette, dye bleed, distressed, halftone, sharpness, color wash, preserve-skin)
+- Effects (vignette, dye bleed, distressed, halftone, sharpness, color wash, preserve-skin,
+  Glow: the whites bloom softly and the middle lifts, colours kept)
 - Color masks: include/exclude specific picked colors from the effect
 - Named presets (saved to `localStorage`), each with its colour masks
 - Export / Import a preset as a file (`*.texturizer-preset.json`, format v1),

@@ -311,6 +311,13 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
     maxDiff(off, raised) > 10 && maxDiff(raised, pressed) > 10, maxDiff(off, raised) + ", " + maxDiff(raised, pressed));
   check("Picture Relief keeps the picture's colours on average (it shades, it doesn't tint)",
     Math.abs(mean(raised) - mean(off)) < 6, mean(off).toFixed(1) + " -> " + mean(raised).toFixed(1));
+
+  fresh.applyPreset(old);
+  fresh.setAttribute("glow", "1");
+  const glowing = await render();
+  let darker = 0;
+  for (let i = 0; i < off.length; i++) if (i % 4 !== 3 && glowing[i] < off[i]) darker++;
+  check("Glow only ever lightens", mean(glowing) > mean(off) && darker === 0, darker + " values darker");
   fresh.dispose();
 }
 

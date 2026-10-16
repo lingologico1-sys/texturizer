@@ -51,6 +51,7 @@ export const CONTROL_CONFIG = {
   washintensity: { type: "range", group: "Effects", label: "Wash Intensity", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
   sharpness: { type: "range", group: "Effects", label: "Sharpness", min: 0, max: 2, step: 0.01, value: 0, suffix: "" },
   halftone: { type: "range", group: "Effects", label: "Halftone", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },
+  glow: { type: "range", group: "Effects", label: "Glow", min: 0, max: 1, step: 0.01, value: 0, suffix: "", addedLater: true },
 
   masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" },
   inktolerance: { type: "range", group: "Color Masks", label: "Black / Ink Tolerance", min: 0, max: 160, step: 1, value: 80, suffix: "" }

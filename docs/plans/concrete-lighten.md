@@ -27,7 +27,15 @@ then the style that combines them.
       levels of the targets, the same at 480 and at full size scaled down.
       The `addedLater` rule (step 4) came with it: old hashes, files and
       pixels unchanged (`npm test` 26, `check:browser` 51, `check:pixels` 71).
-- [ ] 2. Picture Relief slider, −1 to 1 (raised and pressed-in / letterpress)
+- [x] 2. Picture Relief slider, −1 to 1 (raised and pressed-in / letterpress).
+      Done 2026-10-16. Tap 1.0 and blur 1.25 reference pixels, strength 3.6:
+      at 0.5 the rims along the samples' edges come out at 0.97 (A) and 0.91
+      (B) of the targets' strength, the right way round (correlation +0.26
+      and +0.15; the targets' own texture limits it). A sweep of wider taps
+      and blurs matched worse. `check:browser` 60, including the stale-mip
+      sequence; taking out the mip regeneration after the panel's upload
+      fails it (an incomplete chain reads flat, so the relief silently
+      vanishes; a fresh element alone can't catch that).
 - [ ] 3. Concrete texture style
 - [ ] 4. Sample comparison script; tune against A2 / B2 at sample size and
       at full size downscaled

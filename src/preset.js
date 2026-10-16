@@ -33,6 +33,7 @@ export const CONTROL_CONFIG = {
   lightazimuth: { type: "range", group: "Lighting", label: "Light Direction", min: -180, max: 180, step: 1, value: 127, suffix: "°" },
   lightelevation: { type: "range", group: "Lighting", label: "Light Elevation", min: 5, max: 85, step: 1, value: 46, suffix: "°" },
   lighttint: { type: "range", group: "Lighting", label: "Light Warmth", min: -1, max: 1, step: 0.01, value: 0, suffix: "" },
+  relief: { type: "range", group: "Lighting", label: "Picture Relief", min: -1, max: 1, step: 0.01, value: 0, suffix: "", addedLater: true },
 
   lighten: { type: "range", group: "Color", label: "Lighten", min: 0, max: 1, step: 0.01, value: 0, suffix: "", addedLater: true },
   brightness: { type: "range", group: "Color", label: "Brightness", min: 0.2, max: 3, step: 0.01, value: 1, suffix: "" },

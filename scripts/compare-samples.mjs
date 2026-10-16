@@ -8,7 +8,8 @@
 // <look.json> is a preset file, or { "params": { ... } } with only the
 // settings that differ from the defaults. Writes <outDir>/A-480.png,
 // A-full.png, A-full-480.png (full size scaled down in the browser), and the
-// same for B. outDir defaults to samples/out (not committed).
+// same for B. outDir defaults to samples/out (not committed). QUICK=1 skips
+// the full-size renders.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -59,9 +60,11 @@ for (const name of ["A", "B"]) {
   const source = await (await fetch("/samples/" + name + ".jpg")).blob();
   const small = await el.renderBlob(source, { width: 480, height: 672 });
   await save(name + "-480.png", await asDataUrl(small.blob));
-  const full = await el.renderBlob(source);
-  await save(name + "-full.png", await asDataUrl(full.blob));
-  await save(name + "-full-480.png", await asDataUrl(await shrink(full.blob, 480, 672)));
+  if (${JSON.stringify(!process.env.QUICK)}) {
+    const full = await el.renderBlob(source);
+    await save(name + "-full.png", await asDataUrl(full.blob));
+    await save(name + "-full-480.png", await asDataUrl(await shrink(full.blob, 480, 672)));
+  }
 }
 
 await fetch("/log", { method: "POST", body: JSON.stringify({ done: true, results: [

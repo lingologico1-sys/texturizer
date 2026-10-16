@@ -301,7 +301,85 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   check("and the picture is as it was", maxDiff(off, await render()) === 0);
   fresh.applyPreset(exported);
   check("a look with Lighten on comes back with the same hash", fresh.currentSettingsHash() === hashOn);
+
+  fresh.applyPreset(old);
+  fresh.setAttribute("relief", "0.6");
+  const raised = await render();
+  fresh.setAttribute("relief", "-0.6");
+  const pressed = await render();
+  check("Picture Relief changes the picture, and pressed in is not raised",
+    maxDiff(off, raised) > 10 && maxDiff(raised, pressed) > 10, maxDiff(off, raised) + ", " + maxDiff(raised, pressed));
+  check("Picture Relief keeps the picture's colours on average (it shades, it doesn't tint)",
+    Math.abs(mean(raised) - mean(off)) < 6, mean(off).toFixed(1) + " -> " + mean(raised).toFixed(1));
   fresh.dispose();
+}
+
+// Picture Relief reads mipmaps, which go stale if an upload isn't followed by
+// new ones: picture A, then B at another size, an export, then the preview
+// again must each look exactly like a fresh element given the same thing.
+{
+  const asDataUrl = (canvas) => canvas.toDataURL("image/png");
+  const first = asDataUrl(picture(300, 410, 40));
+  const second = asDataUrl(picture(180, 250, 260));
+  const loaded = (el) => new Promise((resolve) => el.addEventListener("filter-ready", resolve, { once: true }));
+  const preview = (el) => {
+    el.renderCanvas();
+    const gl = el.gl;
+    const out = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+    gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    return { size: gl.drawingBufferWidth + "x" + gl.drawingBufferHeight, data: out };
+  };
+  const sameView = (a, b) => a.size === b.size && same(a.data, b.data);
+  const withRelief = async (dataUrl) => {
+    const el = mount({ persist: "off", relief: "0.7" });
+    await el.ready();
+    if (dataUrl) {
+      const wait = loaded(el);
+      el.setAttribute("image-data", dataUrl);
+      await wait;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    return el;
+  };
+
+  const freshA = await withRelief(first);
+  const viewA = preview(freshA);
+  freshA.dispose();
+  const freshB = await withRelief(second);
+  const viewB = preview(freshB);
+  const exportB = (await pixels((await freshB.renderBlob(source)).blob)).data;
+  freshB.dispose();
+
+  const el = await withRelief(first);
+  check("relief preview of A matches a fresh element", sameView(preview(el), viewA));
+  const wait = loaded(el);
+  el.setAttribute("image-data", second);
+  await wait;
+  await new Promise((r) => setTimeout(r, 300));
+  check("after replacing A with B, the preview matches a fresh element with B", sameView(preview(el), viewB));
+  const exported = (await pixels((await el.renderBlob(source)).blob)).data;
+  check("an export from it matches a fresh element's export", same(exported, exportB));
+  await new Promise((r) => setTimeout(r, 300));
+  check("and the preview after the export is still B's", sameView(preview(el), viewB));
+  const middle = viewB.data.length / 2;
+  check("the relief preview is not black", viewB.data.slice(middle, middle + 4000).some((v, i) => i % 4 !== 3 && v > 40));
+  // An incomplete mip chain reads as flat black: no slope, so no relief at
+  // all, in this element and in a fresh one alike. So the relief must show.
+  el.setAttribute("relief", "0");
+  await new Promise((r) => setTimeout(r, 300));
+  check("the relief does show in the preview", !same(preview(el).data, viewB.data));
+  el.setAttribute("relief", "0.7");
+  // Same size, other picture: stale mips would still hold B's edges.
+  const third = asDataUrl(picture(180, 250, 120));
+  const freshC = await withRelief(third);
+  const viewC = preview(freshC);
+  freshC.dispose();
+  const waitC = loaded(el);
+  el.setAttribute("image-data", third);
+  await waitC;
+  await new Promise((r) => setTimeout(r, 300));
+  check("a picture of the same size replacing B matches a fresh element", sameView(preview(el), viewC));
+  el.dispose();
 }
 
 // Context loss.

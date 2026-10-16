@@ -43,6 +43,18 @@ import {
   // updateDisplay), at a small fraction of the pixels. Exports run native.
   const PREVIEW_SUPERSAMPLE = 2;
 
+  // Picture Relief, in pixels of a picture whose short side is 480 (the
+  // samples' size, see docs/plans/concrete-lighten.md), so the rims it draws
+  // keep their share of the picture at any size: how far apart its slope taps
+  // are, how far the picture is blurred first (a one-pixel edge would give a
+  // hard, aliased rim), and how strongly its slope tilts the surface.
+  const RELIEF_REFERENCE = 480;
+  const RELIEF_TAP = 1.0;
+  const RELIEF_BLUR = 1.25;
+  const RELIEF_STRENGTH = 3.6;
+  // A number as GLSL wants a float, decimal point and all.
+  const glslFloat = (x) => x.toFixed(6);
+
   // KHR_parallel_shader_compile. Querying it is the one program parameter that
   // does not force the driver to finish linking.
   const COMPLETION_STATUS_KHR = 0x91b1;
@@ -70,6 +82,7 @@ import {
         "lightazimuth",
         "lightelevation",
         "lighttint",
+        "relief",
         "ao",
         "papertint",
         "vignette",
@@ -98,6 +111,7 @@ import {
       this.program = null;
       this.vao = null;
       this.texture = null;
+      this.mipSampler = null;
       this.image = null;
       this.textureSource = null;
       this.textureWidth = 1;
@@ -124,16 +138,18 @@ import {
       // Rendered inside the custom Color Masks panel rather than as its own group.
       this.maskGroup = "Color Masks";
 
+      // Each style says what its relief is, so choosing one after a style
+      // that uses Picture Relief doesn't carry it over.
       this.styleDefaults = {
-        0: { scale: 36, depth: 0.65, soften: 0.25, papertint: 0.0, ao: 0.5 },
-        1: { scale: 80, depth: 0.40, soften: 0.60, papertint: 0.30, ao: 0.40 },
-        2: { scale: 8,  depth: 0.20, soften: 0.90, papertint: 0.20, ao: 0.20 },
-        3: { scale: 25, depth: 0.80, soften: 0.35, papertint: 0.15, ao: 0.70 },
-        4: { scale: 30, depth: 0.30, soften: 0.40, papertint: 0.00, ao: 0.30 },
-        5: { scale: 12, depth: 1.00, soften: 0.45, papertint: 0.40, ao: 0.60 },
-        6: { scale: 40, depth: 0.50, soften: 0.50, papertint: 0.25, ao: 0.30 },
-        7: { scale: 18, depth: 0.70, soften: 0.30, papertint: 0.10, ao: 0.80 },
-        8: { scale: 28, depth: 0.85, soften: 0.40, papertint: 0.15, ao: 0.65 }
+        0: { scale: 36, depth: 0.65, soften: 0.25, papertint: 0.0, ao: 0.5, relief: 0 },
+        1: { scale: 80, depth: 0.40, soften: 0.60, papertint: 0.30, ao: 0.40, relief: 0 },
+        2: { scale: 8,  depth: 0.20, soften: 0.90, papertint: 0.20, ao: 0.20, relief: 0 },
+        3: { scale: 25, depth: 0.80, soften: 0.35, papertint: 0.15, ao: 0.70, relief: 0 },
+        4: { scale: 30, depth: 0.30, soften: 0.40, papertint: 0.00, ao: 0.30, relief: 0 },
+        5: { scale: 12, depth: 1.00, soften: 0.45, papertint: 0.40, ao: 0.60, relief: 0 },
+        6: { scale: 40, depth: 0.50, soften: 0.50, papertint: 0.25, ao: 0.30, relief: 0 },
+        7: { scale: 18, depth: 0.70, soften: 0.30, papertint: 0.10, ao: 0.80, relief: 0 },
+        8: { scale: 28, depth: 0.85, soften: 0.40, papertint: 0.15, ao: 0.65, relief: 0 }
       };
 
       this.boundHandleFileChange = this.handleFileChange.bind(this);
@@ -2086,6 +2102,11 @@ import {
         #define MAX_MASK_COLORS ${this.MAX_PICKED_COLORS}
 
         uniform sampler2D u_image;
+        // The same picture on a second unit, read through a mipmapped sampler:
+        // Picture Relief's blur, one read per tap. u_image keeps its own
+        // non-mipmapped sampling, so nothing it reads changes.
+        uniform sampler2D u_imageMip;
+        uniform float u_relief;
         uniform vec2 u_resolution;
         uniform float u_scale;
         uniform float u_depth;
@@ -2382,6 +2403,15 @@ import {
            return canvasHeightAt(p);
         }
 
+        // Picture Relief's height: the picture's darkness, so ink stands up (or,
+        // below 0, is pressed in). Kept out of getHeightAt on purpose: groove
+        // shading, AO and Canvas 2's colour all read the material's height, and
+        // the picture's would shade whole areas instead of drawing rims.
+        float pictureHeightAt(vec2 uv, float lod) {
+          vec3 c = textureLod(u_imageMip, uv, lod).rgb;
+          return 1.0 - dot(c, vec3(0.299, 0.587, 0.114));
+        }
+
         vec3 normalFromHeight(vec2 uv, vec2 original_uv) {
           vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
           float radius = mix(0.85, 2.75, clamp(u_soften, 0.0, 1.0));
@@ -2399,12 +2429,24 @@ import {
           }
 
           float strength = u_depth * 12.0 * depthMod;
+          vec2 slope = vec2(hL - hR, hD - hU) * strength;
 
-          return normalize(vec3(
-            (hL - hR) * strength,
-            (hD - hU) * strength,
-            1.0
-          ));
+          // Picture Relief adds the picture's own slope to the material's, worked
+          // out apart from it: its own taps, a fixed share of the picture apart,
+          // so the material is sampled exactly as before.
+          if (u_relief != 0.0 && u_hasImage) {
+            float shortSide = min(u_resolution.x, u_resolution.y);
+            vec2 tap = vec2(${glslFloat(RELIEF_TAP / RELIEF_REFERENCE)}) * shortSide / max(u_resolution, vec2(1.0));
+            vec2 source = vec2(textureSize(u_imageMip, 0));
+            float lod = log2(max(${glslFloat(RELIEF_BLUR / RELIEF_REFERENCE)} * min(source.x, source.y), 1.0));
+            float pL = pictureHeightAt(uv - vec2(tap.x, 0.0), lod);
+            float pR = pictureHeightAt(uv + vec2(tap.x, 0.0), lod);
+            float pD = pictureHeightAt(uv - vec2(0.0, tap.y), lod);
+            float pU = pictureHeightAt(uv + vec2(0.0, tap.y), lod);
+            slope += vec2(pL - pR, pD - pU) * (u_relief * ${glslFloat(RELIEF_STRENGTH)});
+          }
+
+          return normalize(vec3(slope, 1.0));
         }
 
         vec3 rgb2hsv(vec3 c) {
@@ -2749,6 +2791,18 @@ import {
         gl.UNSIGNED_BYTE,
         new Uint8Array([255, 255, 255, 0])
       );
+      gl.generateMipmap(gl.TEXTURE_2D);
+
+      // Picture Relief reads the image through this, on unit 1. A sampler
+      // object overrides the texture's own sampling on its unit only, so unit 0
+      // reads exactly as before. Every level-0 upload into an image texture is
+      // followed by generateMipmap: an upload at a new size leaves the old mip
+      // chain the wrong size, and an incomplete texture reads back black here.
+      this.mipSampler = gl.createSampler();
+      gl.samplerParameteri(this.mipSampler, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.samplerParameteri(this.mipSampler, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
       // Kick off the compile but do not ask whether it succeeded — every status
       // query blocks the main thread until the driver has finished, and this
@@ -2866,6 +2920,7 @@ import {
       const gl = this.gl;
       if (gl) {
         gl.deleteTexture(this.texture);
+        gl.deleteSampler(this.mipSampler);
         gl.deleteProgram(this.program);
         gl.deleteVertexArray(this.vao);
         gl.deleteBuffer(this.vertexBuffer);
@@ -2913,6 +2968,8 @@ import {
         aPosition: gl.getAttribLocation(this.program, "a_position"),
         aUv: gl.getAttribLocation(this.program, "a_uv"),
         uImage: gl.getUniformLocation(this.program, "u_image"),
+        uImageMip: gl.getUniformLocation(this.program, "u_imageMip"),
+        uRelief: gl.getUniformLocation(this.program, "u_relief"),
         uResolution: gl.getUniformLocation(this.program, "u_resolution"),
         uScale: gl.getUniformLocation(this.program, "u_scale"),
         uDepth: gl.getUniformLocation(this.program, "u_depth"),
@@ -3139,6 +3196,7 @@ import {
           gl.UNSIGNED_BYTE,
           new Uint8Array([255, 255, 255, 0])
         );
+        gl.generateMipmap(gl.TEXTURE_2D);
       }
 
       this.setStatus("Choose an image to begin.");
@@ -3164,6 +3222,7 @@ import {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.textureSource);
+      gl.generateMipmap(gl.TEXTURE_2D);
     }
 
     makeTextureSource(image) {
@@ -3469,8 +3528,14 @@ import {
 
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.bindSampler(1, this.mipSampler);
+      gl.activeTexture(gl.TEXTURE0);
 
       gl.uniform1i(this.locations.uImage, 0);
+      gl.uniform1i(this.locations.uImageMip, 1);
+      gl.uniform1f(this.locations.uRelief, this.params.relief);
       gl.uniform2f(this.locations.uResolution, width, height);
       gl.uniform1f(this.locations.uScale, this.params.scale);
       gl.uniform1f(this.locations.uDepth, this.params.depth);
@@ -3588,6 +3653,7 @@ import {
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, textureSource);
+        gl.generateMipmap(gl.TEXTURE_2D);
 
         this.glCanvas.width = outWidth;
         this.glCanvas.height = outHeight;

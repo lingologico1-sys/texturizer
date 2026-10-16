@@ -236,6 +236,12 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   const fallback = await el.renderBlob(source, { type: "image/nope" });
   check("an unsupported type comes back as PNG, and says so", fallback.type === "image/png", fallback.type);
 
+  // The Download button hands its click event to download(); that is not a name.
+  el.download(new MouseEvent("click"));
+  check("a download is named after the picture, not after the click", /^Downloaded [a-z0-9-]+.*\.png\.$/i.test(el.statusEl.textContent)
+    && !/object/i.test(el.statusEl.textContent), el.statusEl.textContent);
+  await new Promise((r) => setTimeout(r, 300));
+
   // The mask preview never reaches an export.
   el.addPickedColor({ r: 0, g: 0, b: 0 }, "exclude");
   const plain = await pixels((await el.renderBlob(source)).blob);
@@ -330,7 +336,15 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
     select.value = String(index);
     select.dispatchEvent(new Event("change"));
   };
+  check("each style is its own program, made when first needed",
+    Object.keys(panel.programs).join(",") === "0", Object.keys(panel.programs).join(","));
   choose(9);
+  const preparing = panel.ready();
+  check("while a style's program is made, the panel says so", panel.loadingEl.hidden === false && /Concrete/.test(panel.loadingTextEl.textContent),
+    panel.loadingTextEl.textContent);
+  await preparing;
+  panel.renderCanvas();
+  check("and the message goes once it's ready", panel.loadingEl.hidden === true && !!panel.programs[9]);
   check("choosing Concrete brings its defaults, Picture Relief on",
     panel.params.texturetype === 9 && panel.params.relief === 0.5 && panel.params.scale === 85,
     JSON.stringify({ t: panel.params.texturetype, relief: panel.params.relief, scale: panel.params.scale }));

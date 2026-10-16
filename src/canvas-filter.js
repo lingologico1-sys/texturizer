@@ -115,7 +115,11 @@ import {
       this.attachShadow({ mode: "open" });
 
       this.gl = null;
-      this.program = null;
+      // One linked program per texture style, made the first time the style
+      // is drawn (see compileStyle). `program` and `locations` are the current
+      // style's.
+      this.programs = {};
+      this.compiling = new Set();
       this.vao = null;
       this.texture = null;
       this.mipSampler = null;
@@ -995,6 +999,55 @@ import {
             box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
           }
 
+          .loading {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-content: center;
+            gap: 12px;
+            padding: 24px;
+            text-align: center;
+            color: #334155;
+            font-size: 14px;
+            background: rgba(255, 255, 255, 0.72);
+            z-index: 5;
+          }
+
+          .loading[hidden] {
+            display: none;
+          }
+
+          .loading-bar {
+            position: relative;
+            width: 220px;
+            height: 6px;
+            margin: 0 auto;
+            overflow: hidden;
+            border-radius: 3px;
+            background: rgba(51, 65, 85, 0.15);
+          }
+
+          .loading-bar span {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 35%;
+            border-radius: 3px;
+            background: #475569;
+            animation: loading-slide 1.4s ease-in-out infinite;
+          }
+
+          @keyframes loading-slide {
+            from { left: -35%; }
+            to { left: 100%; }
+          }
+
+          @media (prefers-reduced-motion: reduce) {
+            .loading-bar span {
+              animation-duration: 4s;
+            }
+          }
+
           .empty-state {
             position: absolute;
             inset: 0;
@@ -1221,6 +1274,10 @@ import {
             <div class="preview-cell" data-cell="texturized">
               <div class="canvas-wrap">
                 <canvas id="canvas"></canvas>
+                <div id="loading" class="loading" role="status" aria-live="polite" hidden>
+                  <span id="loadingText">Preparing the texture…</span>
+                  <span class="loading-bar"><span></span></span>
+                </div>
               </div>
               <div class="preview-tools">
                 <span class="preview-caption">Texturized</span>
@@ -1250,6 +1307,8 @@ import {
       // that into this one so the on-screen preview is an honest anti-aliased
       // shrink of the export (the browser's own downscale aliases fine weaves).
       this.canvas = this.shadowRoot.getElementById("canvas");
+      this.loadingEl = this.shadowRoot.getElementById("loading");
+      this.loadingTextEl = this.shadowRoot.getElementById("loadingText");
       this.displayCtx = this.canvas.getContext("2d");
       this.glCanvas = document.createElement("canvas");
       this.originalImage = this.shadowRoot.getElementById("originalImage");
@@ -2093,8 +2152,8 @@ import {
       const vertexShaderSource = `#version 300 es
         precision highp float;
 
-        in vec2 a_position;
-        in vec2 a_uv;
+        layout(location = 0) in vec2 a_position;
+        layout(location = 1) in vec2 a_uv;
 
         out vec2 v_uv;
 
@@ -2106,6 +2165,11 @@ import {
 
       const fragmentShaderSource = `#version 300 es
         precision highp float;
+
+        // Replaced per program: each style is compiled on its own (see
+        // compileStyle), because a driver compiles every branch it is given,
+        // at every one of the nine height taps.
+        #define TEXTURE_STYLE 0
 
         #define MAX_MASK_COLORS ${this.MAX_PICKED_COLORS}
 
@@ -2447,17 +2511,27 @@ import {
         float getHeightAt(vec2 uv, vec2 original_uv) {
            vec2 p = getBaseP(uv, original_uv);
            
-           if (u_textureType == 1) return paperHeightAt(p);
-           if (u_textureType == 2) return inkWashHeightAt(p);
-           if (u_textureType == 3) return clayHeightAt(p);
-           if (u_textureType == 4) return linocutHeightAt(p);
-           if (u_textureType == 5) return leatherHeightAt(p);
-           if (u_textureType == 6) return slateHeightAt(p);
-           if (u_textureType == 7) return mosaicHeightAt(p);
-           if (u_textureType == 8) return canvas2HeightAt(p);
-           if (u_textureType == 9) return concreteHeightAt(p);
-
+           #if TEXTURE_STYLE == 1
+           return paperHeightAt(p);
+           #elif TEXTURE_STYLE == 2
+           return inkWashHeightAt(p);
+           #elif TEXTURE_STYLE == 3
+           return clayHeightAt(p);
+           #elif TEXTURE_STYLE == 4
+           return linocutHeightAt(p);
+           #elif TEXTURE_STYLE == 5
+           return leatherHeightAt(p);
+           #elif TEXTURE_STYLE == 6
+           return slateHeightAt(p);
+           #elif TEXTURE_STYLE == 7
+           return mosaicHeightAt(p);
+           #elif TEXTURE_STYLE == 8
+           return canvas2HeightAt(p);
+           #elif TEXTURE_STYLE == 9
+           return concreteHeightAt(p);
+           #else
            return canvasHeightAt(p);
+           #endif
         }
 
         // Picture Relief's height: the picture's darkness, so ink stands up (or,
@@ -2913,21 +2987,74 @@ import {
       gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-      // Kick off the compile but do not ask whether it succeeded — every status
-      // query blocks the main thread until the driver has finished, and this
-      // fragment shader inlines nine texture styles across nine height taps per
-      // pixel, which can take the better part of a second. awaitProgram picks it
-      // up once the driver is done.
-      const vertexShader = this.createShader(gl.VERTEX_SHADER, vertexShaderSource);
-      const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentShaderSource);
-      this.awaitProgram(this.createProgram(vertexShader, fragmentShader), vertexShader, fragmentShader);
+      this.shaderSources = { vertex: vertexShaderSource, fragment: fragmentShaderSource };
+      this.compileStyle(this.params.texturetype);
+    }
+
+    // The current style's program, once it has linked; null until then.
+    get program() {
+      const entry = this.programs[this.params.texturetype];
+      return entry ? entry.program : null;
+    }
+
+    get locations() {
+      const entry = this.programs[this.params.texturetype];
+      return entry ? entry.locations : null;
+    }
+
+    // Start compiling a style's program, unless it is done or under way. It is
+    // kicked off without asking whether it succeeded: every status query blocks
+    // the main thread until the driver has finished, and awaitProgram picks it
+    // up once the driver is done. One program holding every style took 70 to
+    // 100 seconds to compile on an Intel laptop; one style alone takes 1 to 7.
+    compileStyle(style) {
+      if (!this.gl || this.rendererError || this.programs[style] || this.compiling.has(style)) {
+        return;
+      }
+      const gl = this.gl;
+      this.compiling.add(style);
+      this.updateLoading();
+      const fragment = this.shaderSources.fragment.replace("#define TEXTURE_STYLE 0", `#define TEXTURE_STYLE ${style}`);
+      const vertexShader = this.createShader(gl.VERTEX_SHADER, this.shaderSources.vertex);
+      const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragment);
+      this.awaitProgram(this.createProgram(vertexShader, fragmentShader), vertexShader, fragmentShader, style);
+    }
+
+    // Resolves once a style's program has linked, starting it if need be.
+    whenStyleReady(style) {
+      if (this.rendererError) {
+        return Promise.reject(this.rendererError);
+      }
+      if (this.programs[style]) {
+        return Promise.resolve();
+      }
+      this.compileStyle(style);
+      return new Promise((resolve, reject) => {
+        this.readyWaiters.push({ style, resolve, reject });
+      });
+    }
+
+    // While the current style's program is compiling there is nothing to show
+    // for it, so say so over the texturized picture, with a moving bar: the
+    // driver gives no progress to report.
+    updateLoading() {
+      if (!this.loadingEl) {
+        return;
+      }
+      const style = this.params.texturetype;
+      const waiting = !!this.gl && !this.rendererError && !this.programs[style];
+      this.loadingEl.hidden = !waiting;
+      if (waiting) {
+        const name = this.controlConfig.texturetype.options[style] || "texture";
+        this.loadingTextEl.textContent = `Preparing the ${name} texture…`;
+      }
     }
 
     // Poll until the driver has finished linking, then do the half of the setup
     // that needs a usable program. With KHR_parallel_shader_compile the poll is
     // free and the compile runs on a driver thread; without it we still get one
     // frame of paint before the blocking status query.
-    awaitProgram(program, vertexShader, fragmentShader) {
+    awaitProgram(program, vertexShader, fragmentShader, style) {
       const gl = this.gl;
       const parallel = gl.getExtension("KHR_parallel_shader_compile");
 
@@ -2954,7 +3081,7 @@ import {
 
         gl.deleteShader(vertexShader);
         gl.deleteShader(fragmentShader);
-        this.finishProgramInit(program);
+        this.finishProgramInit(program, style);
       };
 
       soon(poll);
@@ -2964,17 +3091,20 @@ import {
     // renderBlob() hears why, instead of getting a blank picture.
     failRenderer(message) {
       this.rendererError = new Error(message);
+      this.updateLoading();
       this.setStatus(message, true);
       this.emit("filter-error", { message });
       this.settleReady();
     }
 
+    // Everyone waiting hears once their style has linked, or why it can't.
     settleReady() {
       const waiters = this.readyWaiters;
       this.readyWaiters = [];
-      waiters.forEach(({ resolve, reject }) => {
-        if (this.rendererError) reject(this.rendererError);
-        else resolve();
+      waiters.forEach((waiter) => {
+        if (this.rendererError) waiter.reject(this.rendererError);
+        else if (this.programs[waiter.style]) waiter.resolve();
+        else this.readyWaiters.push(waiter);
       });
     }
 
@@ -3006,9 +3136,7 @@ import {
         }
       }
 
-      return new Promise((resolve, reject) => {
-        this.readyWaiters.push({ resolve, reject });
-      });
+      return this.whenStyleReady(this.params.texturetype);
     }
 
     // Free everything the GPU holds. Removing the element does not do this
@@ -3030,7 +3158,7 @@ import {
       if (gl) {
         gl.deleteTexture(this.texture);
         gl.deleteSampler(this.mipSampler);
-        gl.deleteProgram(this.program);
+        Object.values(this.programs).forEach(({ program }) => gl.deleteProgram(program));
         gl.deleteVertexArray(this.vao);
         gl.deleteBuffer(this.vertexBuffer);
         const lose = gl.getExtension("WEBGL_lose_context");
@@ -3044,7 +3172,8 @@ import {
       }
 
       this.gl = null;
-      this.program = null;
+      this.programs = {};
+      this.compiling.clear();
       this.vao = null;
       this.texture = null;
       this.vertexBuffer = null;
@@ -3068,96 +3197,105 @@ import {
       return gl.getProgramInfoLog(program) || "Unknown shader program link error.";
     }
 
-    finishProgramInit(program) {
+    finishProgramInit(program, style) {
       const gl = this.gl;
 
-      this.program = program;
+      this.programs[style] = { program, locations: this.uniformLocations(program) };
+      this.compiling.delete(style);
 
-      this.locations = {
-        aPosition: gl.getAttribLocation(this.program, "a_position"),
-        aUv: gl.getAttribLocation(this.program, "a_uv"),
-        uImage: gl.getUniformLocation(this.program, "u_image"),
-        uImageMip: gl.getUniformLocation(this.program, "u_imageMip"),
-        uRelief: gl.getUniformLocation(this.program, "u_relief"),
-        uResolution: gl.getUniformLocation(this.program, "u_resolution"),
-        uScale: gl.getUniformLocation(this.program, "u_scale"),
-        uDepth: gl.getUniformLocation(this.program, "u_depth"),
-        uAngle: gl.getUniformLocation(this.program, "u_angle"),
-        uIntensity: gl.getUniformLocation(this.program, "u_intensity"),
-        uSoften: gl.getUniformLocation(this.program, "u_soften"),
-        uContrast: gl.getUniformLocation(this.program, "u_contrast"),
-        uBrightness: gl.getUniformLocation(this.program, "u_brightness"),
-        uLighten: gl.getUniformLocation(this.program, "u_lighten"),
-        uWarp: gl.getUniformLocation(this.program, "u_warp"),
-        uColorScale: gl.getUniformLocation(this.program, "u_colorscale"),
-        uColorDepth: gl.getUniformLocation(this.program, "u_colordepth"),
-        uShininess: gl.getUniformLocation(this.program, "u_shininess"),
-        uLightAzimuth: gl.getUniformLocation(this.program, "u_lightazimuth"),
-        uLightElevation: gl.getUniformLocation(this.program, "u_lightelevation"),
-        uLightTint: gl.getUniformLocation(this.program, "u_lighttint"),
-        uPaperTint: gl.getUniformLocation(this.program, "u_paperTint"),
-        uAO: gl.getUniformLocation(this.program, "u_ao"),
-        uVignette: gl.getUniformLocation(this.program, "u_vignette"),
-        uDyeBleed: gl.getUniformLocation(this.program, "u_dyebleed"),
-        uDistressed: gl.getUniformLocation(this.program, "u_distressed"),
-        uPreserveSkin: gl.getUniformLocation(this.program, "u_preserveskin"),
-        uExcludedCount: gl.getUniformLocation(this.program, "u_excludedCount"),
-        uExcludedColors: gl.getUniformLocation(this.program, "u_excludedColors"),
-        uIncludedCount: gl.getUniformLocation(this.program, "u_includedCount"),
-        uIncludedColors: gl.getUniformLocation(this.program, "u_includedColors"),
-        uExcludeAll: gl.getUniformLocation(this.program, "u_excludeall"),
-        uMaskTolerance: gl.getUniformLocation(this.program, "u_masktolerance"),
-        uInkTolerance: gl.getUniformLocation(this.program, "u_inktolerance"),
-        uHasImage: gl.getUniformLocation(this.program, "u_hasImage"),
-        uTextureType: gl.getUniformLocation(this.program, "u_textureType"),
-        uWashIntensity: gl.getUniformLocation(this.program, "u_washintensity"),
-        uWashColor: gl.getUniformLocation(this.program, "u_washcolor"),
-        uSharpness: gl.getUniformLocation(this.program, "u_sharpness"),
-        uSaturation: gl.getUniformLocation(this.program, "u_saturation"),
-        uHalftone: gl.getUniformLocation(this.program, "u_halftone"),
-        uGlow: gl.getUniformLocation(this.program, "u_glow"),
-        uMaskPreview: gl.getUniformLocation(this.program, "u_maskpreview")
-      };
+      // One quad serves every program: the vertex shader pins its inputs to
+      // locations 0 and 1.
+      if (!this.vao) {
+        this.vao = gl.createVertexArray();
+        gl.bindVertexArray(this.vao);
 
-      this.vao = gl.createVertexArray();
-      gl.bindVertexArray(this.vao);
+        const vertexBuffer = gl.createBuffer();
+        this.vertexBuffer = vertexBuffer;
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
 
-      const vertexBuffer = gl.createBuffer();
-      this.vertexBuffer = vertexBuffer;
-      gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        const quad = new Float32Array([
+          -1, -1, 0, 0,
+           1, -1, 1, 0,
+          -1,  1, 0, 1,
+          -1,  1, 0, 1,
+           1, -1, 1, 0,
+           1,  1, 1, 1
+        ]);
 
-      const quad = new Float32Array([
-        -1, -1, 0, 0,
-         1, -1, 1, 0,
-        -1,  1, 0, 1,
-        -1,  1, 0, 1,
-         1, -1, 1, 0,
-         1,  1, 1, 1
-      ]);
+        gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
 
-      gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+        const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
 
-      const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, stride, 0);
 
-      gl.enableVertexAttribArray(this.locations.aPosition);
-      gl.vertexAttribPointer(this.locations.aPosition, 2, gl.FLOAT, false, stride, 0);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(
+          1,
+          2,
+          gl.FLOAT,
+          false,
+          stride,
+          2 * Float32Array.BYTES_PER_ELEMENT
+        );
 
-      gl.enableVertexAttribArray(this.locations.aUv);
-      gl.vertexAttribPointer(
-        this.locations.aUv,
-        2,
-        gl.FLOAT,
-        false,
-        stride,
-        2 * Float32Array.BYTES_PER_ELEMENT
-      );
-
-      gl.bindVertexArray(null);
+        gl.bindVertexArray(null);
+      }
 
       // Anything that asked to draw while the shader was still linking was
       // silently dropped by renderCanvas, so ask again now.
+      this.updateLoading();
       this.requestRender();
       this.settleReady();
+    }
+
+    uniformLocations(program) {
+      const gl = this.gl;
+      return {
+        aPosition: gl.getAttribLocation(program, "a_position"),
+        aUv: gl.getAttribLocation(program, "a_uv"),
+        uImage: gl.getUniformLocation(program, "u_image"),
+        uImageMip: gl.getUniformLocation(program, "u_imageMip"),
+        uRelief: gl.getUniformLocation(program, "u_relief"),
+        uResolution: gl.getUniformLocation(program, "u_resolution"),
+        uScale: gl.getUniformLocation(program, "u_scale"),
+        uDepth: gl.getUniformLocation(program, "u_depth"),
+        uAngle: gl.getUniformLocation(program, "u_angle"),
+        uIntensity: gl.getUniformLocation(program, "u_intensity"),
+        uSoften: gl.getUniformLocation(program, "u_soften"),
+        uContrast: gl.getUniformLocation(program, "u_contrast"),
+        uBrightness: gl.getUniformLocation(program, "u_brightness"),
+        uLighten: gl.getUniformLocation(program, "u_lighten"),
+        uWarp: gl.getUniformLocation(program, "u_warp"),
+        uColorScale: gl.getUniformLocation(program, "u_colorscale"),
+        uColorDepth: gl.getUniformLocation(program, "u_colordepth"),
+        uShininess: gl.getUniformLocation(program, "u_shininess"),
+        uLightAzimuth: gl.getUniformLocation(program, "u_lightazimuth"),
+        uLightElevation: gl.getUniformLocation(program, "u_lightelevation"),
+        uLightTint: gl.getUniformLocation(program, "u_lighttint"),
+        uPaperTint: gl.getUniformLocation(program, "u_paperTint"),
+        uAO: gl.getUniformLocation(program, "u_ao"),
+        uVignette: gl.getUniformLocation(program, "u_vignette"),
+        uDyeBleed: gl.getUniformLocation(program, "u_dyebleed"),
+        uDistressed: gl.getUniformLocation(program, "u_distressed"),
+        uPreserveSkin: gl.getUniformLocation(program, "u_preserveskin"),
+        uExcludedCount: gl.getUniformLocation(program, "u_excludedCount"),
+        uExcludedColors: gl.getUniformLocation(program, "u_excludedColors"),
+        uIncludedCount: gl.getUniformLocation(program, "u_includedCount"),
+        uIncludedColors: gl.getUniformLocation(program, "u_includedColors"),
+        uExcludeAll: gl.getUniformLocation(program, "u_excludeall"),
+        uMaskTolerance: gl.getUniformLocation(program, "u_masktolerance"),
+        uInkTolerance: gl.getUniformLocation(program, "u_inktolerance"),
+        uHasImage: gl.getUniformLocation(program, "u_hasImage"),
+        uTextureType: gl.getUniformLocation(program, "u_textureType"),
+        uWashIntensity: gl.getUniformLocation(program, "u_washintensity"),
+        uWashColor: gl.getUniformLocation(program, "u_washcolor"),
+        uSharpness: gl.getUniformLocation(program, "u_sharpness"),
+        uSaturation: gl.getUniformLocation(program, "u_saturation"),
+        uHalftone: gl.getUniformLocation(program, "u_halftone"),
+        uGlow: gl.getUniformLocation(program, "u_glow"),
+        uMaskPreview: gl.getUniformLocation(program, "u_maskpreview")
+      };
     }
 
     setupResizeObserver() {
@@ -3604,9 +3742,18 @@ import {
     }
 
     renderCanvas() {
+      this.updateLoading();
       // While renderBlob holds the canvas the preview waits; renderBlob asks
       // for a fresh frame when it is done.
-      if (!this.gl || !this.program || !this.vao || !this.glCanvas || this.exportBusy) {
+      if (this.gl && !this.program) {
+        // A style not drawn before: compile it, and keep the last picture up
+        // meanwhile; finishProgramInit asks for this frame again.
+        this.compileStyle(this.params.texturetype);
+        this.updateLoading();
+        return;
+      }
+
+      if (!this.gl || !this.vao || !this.glCanvas || this.exportBusy) {
         return;
       }
 
@@ -3737,10 +3884,12 @@ import {
       this.exportBusy = true;
 
       try {
-        // Decoding took a while; the renderer may have gone in the meantime.
+        // Decoding took a while; the renderer may have gone in the meantime,
+        // or the settings moved to a style whose program isn't made yet.
         if (this.rendererError) {
           throw this.rendererError;
         }
+        await this.whenStyleReady(this.params.texturetype);
 
         const gl = this.gl;
         const textureSource = this.makeTextureSource(image);
@@ -3969,7 +4118,8 @@ import {
         return;
       }
 
-      const outputName = filename || this.makeDownloadFilename();
+      // The button's click handler passes its event in here, not a name.
+      const outputName = typeof filename === "string" && filename ? filename : this.makeDownloadFilename();
       const link = document.createElement("a");
       link.href = dataUrl;
       link.download = outputName;

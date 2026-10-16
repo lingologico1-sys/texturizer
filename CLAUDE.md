@@ -48,8 +48,12 @@ Rough map, since it is one long class:
 | 3512–3640 | `renderBlob` (the host's export), `decodeSource` |
 | 3640–3818 | `renderFullRes`, `updateDisplay`, download, filename, status, `emit` |
 
-The fragment shader inlines all ten texture styles across nine height taps.
-It is long and branchy on purpose — one program, no per-style recompile.
+The fragment shader holds all ten texture styles, but each style is compiled
+as its own program (`#define TEXTURE_STYLE n`, see `compileStyle`), the first
+time it's drawn. One program with every style took 70–100 s to compile on an
+Intel laptop's driver, which compiles every branch at all nine height taps;
+one style takes 1–7 s. `program` / `locations` are getters for the current
+style's; `ready()` waits for it, and the panel shows a loading bar meanwhile.
 Picture Relief reads the same image on texture unit 1 through a mipmapped
 sampler object; every level-0 upload into an image texture must be followed
 by `generateMipmap` (see `initWebGL`).

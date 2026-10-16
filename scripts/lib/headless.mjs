@@ -48,7 +48,9 @@ const TYPES = { ".js": "text/javascript", ".json": "application/json", ".jpg": "
 const typeOf = (path) => TYPES[path.slice(path.lastIndexOf(".")).toLowerCase()] || "application/octet-stream";
 
 // routes: { "/path": () => Buffer } served beside the page and /src/*.js.
-export function runPage({ script, routes = {}, outDir = null, timeoutMs = 600_000, args = [] }) {
+// gpu: true uses the machine's real graphics instead of software rendering,
+// for timings; the checks keep software rendering so they run anywhere.
+export function runPage({ script, routes = {}, outDir = null, timeoutMs = 600_000, args = [], gpu = false }) {
   const page = `<!doctype html><meta charset="utf-8"><title>texturizer check</title>
 <style>body { margin: 0; } texturize-filter, texturize-filter-base { display: block; width: 900px; }</style>
 <script>
@@ -113,8 +115,7 @@ ${script}
     server.listen(0, "127.0.0.1", () => {
       chrome = spawn(findChrome(), [
         "--headless=new",
-        "--use-angle=swiftshader",
-        "--enable-unsafe-swiftshader",
+        ...(gpu ? [] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"]),
         "--no-first-run",
         "--no-default-browser-check",
         `--user-data-dir=${mkdtempSync(join(tmpdir(), "tx-"))}`,

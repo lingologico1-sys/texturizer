@@ -118,6 +118,7 @@ npm run preview
 npm run pages:dev  # wrangler pages dev proxying 5173
 npm test           # src/preset.js in plain Node (no browser)
 npm run check:browser  # the component in headless Chrome, software WebGL
+npm run check:pixels   # old looks render identically to 04d142d (BASE=<commit> to change)
 ```
 
 Both checks are dependency-free scripts (`node --test`, and a spawned Chrome;

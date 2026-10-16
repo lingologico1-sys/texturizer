@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "node --test test/preset.test.mjs",
     "check:browser": "node scripts/check-browser.mjs",
+    "check:pixels": "node scripts/check-pixels.mjs",
     "pages:dev": "wrangler pages dev --proxy 5173 -- npm run dev",
     "deploy": "npm run build && wrangler pages deploy dist --project-name texturizer"
   },

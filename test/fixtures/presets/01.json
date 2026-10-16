@@ -1,0 +1,42 @@
+{
+  "format": "texturizer-preset",
+  "version": 1,
+  "name": "01",
+  "exported": "2026-10-16T04:30:49.982Z",
+  "build": "04d142d",
+  "params": {
+    "texturetype": 0,
+    "scale": 69,
+    "angle": 0,
+    "warp": 0,
+    "depth": 0.65,
+    "soften": 0.25,
+    "intensity": 1,
+    "shininess": 0,
+    "ao": 0.5,
+    "lightazimuth": 127,
+    "lightelevation": 46,
+    "lighttint": 0.84,
+    "brightness": 1,
+    "contrast": 1.08,
+    "saturation": 1,
+    "papertint": 0,
+    "colorscale": 0,
+    "colordepth": 0,
+    "vignette": 0,
+    "dyebleed": 0,
+    "distressed": 0,
+    "preserveskin": 0,
+    "washcolor": "#6a11cb",
+    "washintensity": 0,
+    "sharpness": 0,
+    "halftone": 0,
+    "masktolerance": 8,
+    "inktolerance": 80
+  },
+  "masks": {
+    "exclude": [],
+    "include": [],
+    "excludeAll": false
+  }
+}

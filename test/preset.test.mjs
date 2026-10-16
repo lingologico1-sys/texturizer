@@ -5,6 +5,7 @@
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
@@ -194,4 +195,40 @@ test("a round trip through makePreset and JSON keeps the hash", () => {
   assert.deepEqual(back.warnings, []);
   assert.equal(back.settingsHash, settingsHash(settings));
   assert.equal(back.preset.name, "Round trip");
+});
+
+// Real preset files, exported from the live Texturizer at 04d142d before
+// any setting was added. 02, 03 and 04 are installed in translator, whose
+// server stored them under these same hashes; 04 is its house look. A
+// change to the schema must leave every one of them hashing as it did, or
+// translator would take an old look for a new one.
+const FIXTURE_HASHES = {
+  "01": "cef7bcf6636f436983a39d319c14d4a461d190958164da2caeac9b9fa07bcb50",
+  "02": "a1e1b168c7013995dbf0b2c93ef4384d197bb101a7c1cefba6838e166218a269",
+  "03": "e911252d418f0694142286cddb3c022c27645b49ada6c076baef5e9fa8d86ca7",
+  "04": "33c64c7661e64d53131ad598f6bf1d0feb220c96ba1fb2c5f6e252a490dd3c91"
+};
+const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/presets/${name}.json`, import.meta.url), "utf8"));
+
+test("real old preset files keep their hashes, with nothing to say", () => {
+  for (const [name, hash] of Object.entries(FIXTURE_HASHES)) {
+    const r = validatePreset(fixture(name));
+    assert.ok(r.ok, name);
+    assert.deepEqual(r.warnings, [], name);
+    assert.equal(r.settingsHash, hash, name);
+  }
+});
+
+test("the defaults keep their hash", () => {
+  assert.equal(settingsHash(good()), "11ffd3a8c6b9c27a8ae57aa11c4c2147cf63c6c90f995d636272681cdfb06443");
+});
+
+test("an old file exported again keeps its hash", () => {
+  for (const [name, hash] of Object.entries(FIXTURE_HASHES)) {
+    const { preset } = validatePreset(fixture(name));
+    const again = validatePreset(JSON.parse(JSON.stringify(makePreset({ name, build: "dev", settings: preset }))));
+    assert.ok(again.ok, name);
+    assert.deepEqual(again.warnings, [], name);
+    assert.equal(again.settingsHash, hash, name);
+  }
 });

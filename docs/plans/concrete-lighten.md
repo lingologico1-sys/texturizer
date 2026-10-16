@@ -13,9 +13,14 @@ numbers, the design, and what is still open.
 Build order follows the review: compatibility first, each control alone,
 then the style that combines them.
 
-- [ ] 0. Compatibility fixtures: real old presets with their literal hashes,
+- [x] 0. Compatibility fixtures: real old presets with their literal hashes,
       and pixel baselines of all nine existing styles, captured **before**
-      any schema or shader change
+      any schema or shader change. Done 2026-10-16: `test/fixtures/presets/`
+      (the owner's four exports; 02–04 are installed in translator, whose
+      server stored them under the same hashes) in `npm test`, and
+      `npm run check:pixels`, which renders 22 looks with 04d142d and with
+      the working tree in one browser and needs identical pixels (71 checks;
+      a 0.002 shift in Contrast fails 48 of them).
 - [ ] 1. Lighten slider (alone, with Brightness and Contrast neutral)
 - [ ] 2. Picture Relief slider, −1 to 1 (raised and pressed-in / letterpress)
 - [ ] 3. Concrete texture style
@@ -209,7 +214,7 @@ Three sizes are kept apart (review round 2, point 2):
 renders at different sizes after downscaling, with a tolerance, not
 bit-for-bit.
 
-### 0. Compatibility fixtures (first)
+### 0. Compatibility fixtures (first, done)
 
 Before touching the schema or the shader:
 
@@ -461,6 +466,10 @@ identity. The owner chose to try the new looks in Texturizer first.
 3. Concrete should **match the samples** (broken grid + grit).
 4. translator's copy: **decide later**.
 5. Every reveal effect must be **pleasant, not jarring** (the brief above).
+   The house look installed in translator today ("04": Canvas, scale 86,
+   Brightness 1.98) was too jarring; that is why this work exists. The
+   fixtures keep it reproducible for reveal faces already made, not as a
+   target.
 6. Add the **letterpress deboss** (Relief below 0) to this work, and do
    **Glow** next.
 

@@ -21,7 +21,12 @@ then the style that combines them.
       `npm run check:pixels`, which renders 22 looks with 04d142d and with
       the working tree in one browser and needs identical pixels (71 checks;
       a 0.002 shift in Contrast fails 48 of them).
-- [ ] 1. Lighten slider (alone, with Brightness and Contrast neutral)
+- [x] 1. Lighten slider (alone, with Brightness and Contrast neutral).
+      Done 2026-10-16. At 0.5 with Intensity 0, Brightness 1, Contrast 1,
+      the samples' flat colours come out within rms 3.7 (A) and 4.3 (B)
+      levels of the targets, the same at 480 and at full size scaled down.
+      The `addedLater` rule (step 4) came with it: old hashes, files and
+      pixels unchanged (`npm test` 26, `check:browser` 51, `check:pixels` 71).
 - [ ] 2. Picture Relief slider, −1 to 1 (raised and pressed-in / letterpress)
 - [ ] 3. Concrete texture style
 - [ ] 4. Sample comparison script; tune against A2 / B2 at sample size and
@@ -401,9 +406,9 @@ Chrome harness in `scripts/check-browser.mjs`) renders A.jpg and B.jpg:
   match the samples;
 - with Concrete, Lighten 0.5, Brightness 1, Contrast 1;
 
-and reports the flat-area tone table above (ported from
-`samples/fit-tone.py`), the residual's groove spacing, and side-by-side crops
-(face, background, dress). Full size downscaled and sample size must be
+and `samples/measure.py` reports the flat-area tone table above (the same
+method as `samples/fit-tone.py`, so it stays in Python), the background
+texture's strength and groove spacing, and side-by-side crops. Full size downscaled and sample size must be
 visually similar within a tolerance, not identical.
 
 **Shimmer is a display test, not a file test** (review round 2). Downscaled

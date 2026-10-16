@@ -7,34 +7,16 @@
 //
 // The source files are served as they are, unbundled, which is also how a
 // host app loads its pinned copy. Set CHROME to the browser to use; otherwise
-// google-chrome, then a Playwright Chromium from ~/.cache/ms-playwright.
-// Software rendering proves function, not speed.
+// the usual install paths (see scripts/lib/headless.mjs), then a Playwright
+// Chromium from ~/.cache/ms-playwright. Software rendering proves function,
+// not speed.
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-function findChrome() {
-  if (process.env.CHROME) return process.env.CHROME;
-  for (const path of ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"]) {
-    if (existsSync(path)) return path;
-  }
-  const cache = join(homedir(), ".cache", "ms-playwright");
-  if (existsSync(cache)) {
-    for (const dir of readdirSync(cache).filter((d) => /^chromium-\d+$/.test(d)).sort().reverse()) {
-      for (const sub of readdirSync(join(cache, dir))) {
-        const path = join(cache, dir, sub, "chrome");
-        if (existsSync(path)) return path;
-      }
-    }
-  }
-  throw new Error("No Chrome found. Set CHROME to its path.");
-}
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ROOT, findChrome } from "./lib/headless.mjs";
 
 const pageScript = String.raw`
 import { validatePreset, settingsHash, defaultParams } from "/src/preset.js";
@@ -290,6 +272,36 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   const mixed = await Promise.allSettled([el.renderBlob(42), el.renderBlob(source)]);
   check("a failed call does not block the one queued behind it",
     mixed[0].status === "rejected" && mixed[1].status === "fulfilled");
+}
+
+// Settings added later: they start from nothing, and an old preset puts them back to it.
+{
+  const fresh = mount({ persist: "off" });
+  await fresh.ready();
+  const render = async () => (await pixels((await fresh.renderBlob(source, { width: 140, height: 192 })).blob)).data;
+  const mean = (data) => data.reduce((sum, v, i) => (i % 4 === 3 ? sum : sum + v), 0) / (data.length * 0.75);
+  const maxDiff = (a, b) => a.reduce((worst, v, i) => Math.max(worst, Math.abs(v - b[i])), 0);
+
+  const off = await render();
+  fresh.setAttribute("lighten", "0.01");
+  const first = await render();
+  check("Lighten's first step moves the picture only a little", maxDiff(off, first) <= 4 && maxDiff(off, first) > 0, maxDiff(off, first));
+  fresh.setAttribute("lighten", "0.5");
+  const half = await render();
+  check("Lighten 0.5 brightens", mean(half) > mean(off) + 8, mean(off).toFixed(1) + " -> " + mean(half).toFixed(1));
+  const hashOn = fresh.currentSettingsHash();
+  const exported = fresh.getPreset("on");
+  check("an exported look with Lighten on carries it", exported.params.lighten === 0.5);
+
+  const old = fresh.getPreset("old");
+  delete old.params.lighten;
+  const applied = fresh.applyPreset(old);
+  check("an old preset without Lighten turns it off, with nothing to say",
+    fresh.params.lighten === 0 && applied.warnings.length === 0, applied.warnings.join(" "));
+  check("and the picture is as it was", maxDiff(off, await render()) === 0);
+  fresh.applyPreset(exported);
+  check("a look with Lighten on comes back with the same hash", fresh.currentSettingsHash() === hashOn);
+  fresh.dispose();
 }
 
 // Context loss.

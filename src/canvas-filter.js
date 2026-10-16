@@ -62,6 +62,7 @@ import {
         "soften",
         "contrast",
         "brightness",
+        "lighten",
         "warp",
         "colorscale",
         "colordepth",
@@ -1436,6 +1437,9 @@ import {
       Object.keys(this.controlConfig).forEach(key => {
         if (config[key] !== undefined) {
           this.setAttribute(key, config[key]);
+        } else if (this.controlConfig[key].addedLater) {
+          // Saved before the setting existed: it was made without it.
+          this.setAttribute(key, String(this.controlConfig[key].value));
         }
       });
 
@@ -1505,8 +1509,11 @@ import {
         throw new Error(result.errors.join(" "));
       }
 
-      Object.entries(result.preset.params).forEach(([key, value]) => {
-        this.setAttribute(key, String(value));
+      // A file leaves out settings added later while they're at their
+      // identity, so a missing one is set back to it, not left as it was.
+      Object.entries(this.controlConfig).forEach(([key, config]) => {
+        const value = result.preset.params[key];
+        this.setAttribute(key, String(value !== undefined ? value : config.value));
       });
       this.setMasks(result.preset.masks);
 
@@ -2087,6 +2094,7 @@ import {
         uniform float u_soften;
         uniform float u_contrast;
         uniform float u_brightness;
+        uniform float u_lighten;
         uniform float u_warp;
         uniform float u_colorscale;
         uniform float u_colordepth;
@@ -2425,6 +2433,25 @@ import {
             return hsv2rgb(hsv);
         }
 
+        // Brighter and more contrast together, as one move: a white point
+        // pulled down and a midtone lift, per channel, with black kept. Above
+        // a knee the top of the range rolls into white along a rational curve
+        // instead of clipping, so pale colours keep their detail. At t = 0 the
+        // shoulder is a straight line and the gamma 1, so the slider starts
+        // from nothing with no jump; the curve rises everywhere, for every t.
+        vec3 applyLighten(vec3 color, float t) {
+          float white = mix(1.0, 0.75, t);
+          float gamma = mix(1.0, 1.40, t);
+          const float knee = 0.90;
+          float span = 1.0 / white - knee;
+          float m = span / (1.0 - knee);
+          vec3 u = color / white;
+          vec3 v = clamp((u - knee) / span, 0.0, 1.0);
+          vec3 top = knee + (1.0 - knee) * (m * v) / (1.0 + (m - 1.0) * v);
+          vec3 c = mix(u, top, step(knee, u));
+          return pow(clamp(c, 0.0, 1.0), vec3(1.0 / gamma));
+        }
+
         vec3 applyContrast(vec3 color, float amount) {
           return clamp((color - 0.5) * amount + 0.5, 0.0, 1.0);
         }
@@ -2609,7 +2636,8 @@ import {
           lighting *= aoFactor;
 
           vec3 blend = vec3(lighting) * lightColor;
-          vec3 satColor = applySaturation(source.rgb, u_saturation);
+          vec3 lightened = u_lighten > 0.0 ? applyLighten(source.rgb, u_lighten) : source.rgb;
+          vec3 satColor = applySaturation(lightened, u_saturation);
           vec3 brightColor = applyBrightness(satColor, max(u_brightness, 0.01));
           vec3 baseColor = applyContrast(brightColor, max(u_contrast, 0.0));
 
@@ -2893,6 +2921,7 @@ import {
         uSoften: gl.getUniformLocation(this.program, "u_soften"),
         uContrast: gl.getUniformLocation(this.program, "u_contrast"),
         uBrightness: gl.getUniformLocation(this.program, "u_brightness"),
+        uLighten: gl.getUniformLocation(this.program, "u_lighten"),
         uWarp: gl.getUniformLocation(this.program, "u_warp"),
         uColorScale: gl.getUniformLocation(this.program, "u_colorscale"),
         uColorDepth: gl.getUniformLocation(this.program, "u_colordepth"),
@@ -3450,6 +3479,7 @@ import {
       gl.uniform1f(this.locations.uSoften, this.params.soften);
       gl.uniform1f(this.locations.uContrast, this.params.contrast);
       gl.uniform1f(this.locations.uBrightness, this.params.brightness);
+      gl.uniform1f(this.locations.uLighten, this.params.lighten);
       gl.uniform1f(this.locations.uWarp, this.params.warp);
       gl.uniform1f(this.locations.uColorScale, this.params.colorscale);
       gl.uniform1f(this.locations.uColorDepth, this.params.colordepth);

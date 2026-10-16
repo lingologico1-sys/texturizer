@@ -11,6 +11,7 @@ import { test } from "node:test";
 import {
   CONTROL_CONFIG,
   defaultParams,
+  atIdentity,
   makePreset,
   normalizeSettings,
   settingsHash,
@@ -231,4 +232,59 @@ test("an old file exported again keeps its hash", () => {
     assert.deepEqual(again.warnings, [], name);
     assert.equal(again.settingsHash, hash, name);
   }
+});
+
+const ADDED_LATER = Object.keys(CONTROL_CONFIG).filter((name) => CONTROL_CONFIG[name].addedLater);
+
+test("every setting added later has identity 0", () => {
+  assert.ok(ADDED_LATER.length > 0);
+  for (const name of ADDED_LATER) {
+    assert.equal(CONTROL_CONFIG[name].value, 0, name);
+    assert.ok(atIdentity(name, 0), name);
+    assert.ok(!atIdentity(name, 0.5), name);
+  }
+  assert.ok(!atIdentity("scale", CONTROL_CONFIG.scale.value));
+});
+
+test("a setting added later: missing, explicit 0 and non-zero", () => {
+  for (const name of ADDED_LATER) {
+    const missing = good();
+    delete missing.params[name];
+    const r = normalizeSettings(missing);
+    assert.deepEqual(r.warnings, [], name);
+    assert.equal(r.settings.params[name], 0, name);
+
+    const zero = good();
+    zero.params[name] = 0;
+    assert.equal(settingsHash(zero), settingsHash(missing), name);
+
+    const on = good();
+    on.params[name] = CONTROL_CONFIG[name].max;
+    assert.notEqual(settingsHash(on), settingsHash(missing), name);
+  }
+});
+
+test("an exported file leaves settings added later out at 0, and keeps them otherwise", () => {
+  const off = makePreset({ name: "x", build: "dev", settings: normalizeSettings(good()).settings });
+  for (const name of ADDED_LATER) assert.ok(!(name in off.params), name);
+
+  const s = good();
+  for (const name of ADDED_LATER) s.params[name] = CONTROL_CONFIG[name].max;
+  const on = makePreset({ name: "x", build: "dev", settings: normalizeSettings(s).settings });
+  for (const name of ADDED_LATER) assert.equal(on.params[name], CONTROL_CONFIG[name].max, name);
+
+  const back = validatePreset(JSON.parse(JSON.stringify(on)));
+  assert.ok(back.ok);
+  assert.deepEqual(back.warnings, []);
+  assert.equal(back.settingsHash, settingsHash(s));
+});
+
+test("an old file with a new setting turned on gets a new hash, and keeps it through a round trip", () => {
+  const old = fixture("04");
+  const changed = { ...old, params: { ...old.params, [ADDED_LATER[0]]: 0.5 } };
+  const r = validatePreset(changed);
+  assert.ok(r.ok);
+  assert.notEqual(r.settingsHash, FIXTURE_HASHES["04"]);
+  const again = validatePreset(JSON.parse(JSON.stringify(r.preset)));
+  assert.equal(again.settingsHash, r.settingsHash);
 });

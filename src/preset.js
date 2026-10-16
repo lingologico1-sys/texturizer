@@ -12,6 +12,13 @@ export const MAX_MASK_COLORS = 32;
 
 // One entry per setting. `type` decides the control the panel draws and how a
 // value is checked; `value` is the default.
+//
+// `addedLater` marks a setting that came after looks were already being saved
+// and hashed (translator keeps reveal faces by the hash). Its `value` is the
+// setting's identity, the value that changes nothing, and must stay 0 for
+// good: at that value the setting is left out of the hash and out of an
+// exported file, and a file without it takes it quietly. So a look that
+// doesn't use it keeps the hash, the file and the pixels it always had.
 export const CONTROL_CONFIG = {
   texturetype: { type: "select", group: "Texture", label: "Texture Style", options: ["Canvas", "Paper", "Ink Wash", "Clay", "Linocut", "Leather", "Slate", "Mosaic", "Canvas 2"], value: 0, min: 0, max: 8, step: 1, suffix: "" },
   scale: { type: "range", group: "Texture", label: "Scale", min: 4, max: 120, step: 1, value: 36, suffix: "" },
@@ -27,6 +34,7 @@ export const CONTROL_CONFIG = {
   lightelevation: { type: "range", group: "Lighting", label: "Light Elevation", min: 5, max: 85, step: 1, value: 46, suffix: "°" },
   lighttint: { type: "range", group: "Lighting", label: "Light Warmth", min: -1, max: 1, step: 0.01, value: 0, suffix: "" },
 
+  lighten: { type: "range", group: "Color", label: "Lighten", min: 0, max: 1, step: 0.01, value: 0, suffix: "", addedLater: true },
   brightness: { type: "range", group: "Color", label: "Brightness", min: 0.2, max: 3, step: 0.01, value: 1, suffix: "" },
   contrast: { type: "range", group: "Color", label: "Contrast", min: 0.5, max: 2, step: 0.01, value: 1.08, suffix: "" },
   saturation: { type: "range", group: "Color", label: "Saturation", min: 0, max: 3, step: 0.01, value: 1.0, suffix: "" },
@@ -46,6 +54,13 @@ export const CONTROL_CONFIG = {
   masktolerance: { type: "range", group: "Color Masks", label: "Match Tolerance", min: 1, max: 64, step: 1, value: 8, suffix: "" },
   inktolerance: { type: "range", group: "Color Masks", label: "Black / Ink Tolerance", min: 0, max: 160, step: 1, value: 80, suffix: "" }
 };
+
+// A setting added after looks were already hashed, sitting at the value
+// that changes nothing (see `addedLater` above).
+export function atIdentity(name, value) {
+  const config = CONTROL_CONFIG[name];
+  return !!(config && config.addedLater && value === config.value);
+}
 
 export function defaultParams() {
   const params = {};
@@ -159,7 +174,9 @@ export function normalizeSettings(input) {
     for (const [name, config] of Object.entries(CONTROL_CONFIG)) {
       const raw = input.params[name];
       if (raw === undefined) {
-        warnings.push(`"${name}" was missing; its default (${config.value}) is used.`);
+        if (!config.addedLater) {
+          warnings.push(`"${name}" was missing; its default (${config.value}) is used.`);
+        }
         params[name] = config.value;
       } else {
         params[name] = checkParam(name, config, raw, warnings, errors);
@@ -195,7 +212,9 @@ export function normalizeSettings(input) {
 
 // The identity of a look: a sha256 over the normalised params and masks only.
 // A preset's name, dates and build are left out, so exporting the same
-// settings twice gives the same hash. Throws if the settings are refused.
+// settings twice gives the same hash, and so are settings added later while
+// at their identity, so old looks keep their hashes. Throws if the settings
+// are refused.
 export function settingsHash(input) {
   const { settings, errors } = normalizeSettings(input);
   if (!settings) {
@@ -204,7 +223,9 @@ export function settingsHash(input) {
 
   const rgb = (list) => list.map((c) => [c.r, c.g, c.b]);
   const canonical = JSON.stringify({
-    params: Object.keys(settings.params).sort().map((name) => [name, settings.params[name]]),
+    params: Object.keys(settings.params).sort()
+      .filter((name) => !atIdentity(name, settings.params[name]))
+      .map((name) => [name, settings.params[name]]),
     masks: {
       exclude: rgb(settings.masks.exclude),
       include: rgb(settings.masks.include),
@@ -223,7 +244,9 @@ export function makePreset({ name, exported, build, settings }) {
     name: String(name || "").trim() || "Untitled",
     exported: exported || new Date().toISOString(),
     build: String(build || ""),
-    params: { ...settings.params },
+    // Left out at their identity, so an older build reads the file with
+    // nothing to say about settings it doesn't know.
+    params: Object.fromEntries(Object.entries(settings.params).filter(([name, value]) => !atIdentity(name, value))),
     masks: {
       exclude: settings.masks.exclude.map((c) => ({ r: c.r, g: c.g, b: c.b })),
       include: settings.masks.include.map((c) => ({ r: c.r, g: c.g, b: c.b })),

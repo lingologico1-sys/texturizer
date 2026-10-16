@@ -153,8 +153,11 @@ test("a washcolor that isn't #rrggbb is refused; a good one is lower-cased", () 
   assert.equal(normalizeSettings(s).settings.params.washcolor, "#6a11cb");
 });
 
-test("a texturetype of 9 is refused", () => {
-  refused((s) => (s.params.texturetype = 9), /texturetype/);
+test("a texturetype of 10 is refused; 9 (Concrete) is fine", () => {
+  refused((s) => (s.params.texturetype = 10), /texturetype/);
+  const concrete = good();
+  concrete.params.texturetype = 9;
+  assert.ok(normalizeSettings(concrete).settings);
   refused((s) => (s.params.texturetype = 1.5), /texturetype/);
 });
 
@@ -170,7 +173,7 @@ test("a preset file is checked for format and version", () => {
   assert.equal(validatePreset(null).ok, false);
   assert.equal(validatePreset(file({ format: "other" })).ok, false);
   assert.equal(validatePreset(file({ version: 2 })).ok, false);
-  const bad = validatePreset(file({ params: { ...defaultParams(), texturetype: 9 } }));
+  const bad = validatePreset(file({ params: { ...defaultParams(), texturetype: 10 } }));
   assert.equal(bad.ok, false);
   assert.equal(bad.preset, null);
 });

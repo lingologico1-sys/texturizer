@@ -48,8 +48,17 @@ Rough map, since it is one long class:
 | 3512–3640 | `renderBlob` (the host's export), `decodeSource` |
 | 3640–3818 | `renderFullRes`, `updateDisplay`, download, filename, status, `emit` |
 
-The fragment shader inlines all nine texture styles across nine height taps.
+The fragment shader inlines all ten texture styles across nine height taps.
 It is long and branchy on purpose — one program, no per-style recompile.
+Picture Relief reads the same image on texture unit 1 through a mipmapped
+sampler object; every level-0 upload into an image texture must be followed
+by `generateMipmap` (see `initWebGL`).
+
+**New settings are `addedLater` in `preset.js`, with identity 0.** At 0 they
+are left out of the hash and of exported files, so old looks keep their hash
+and pixels; `npm run check:pixels` proves the pixels against 04d142d. Styles
+from Concrete (9) on sample a share of the picture, not output pixels
+(`sampleScale()`); don't change the older styles' sampling.
 
 ## Things that will bite you
 

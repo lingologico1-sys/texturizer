@@ -10,9 +10,11 @@ There is no backend — all processing happens in the browser on the GPU.
 
 ## Features
 
-- 9 texture styles with per-style smart defaults
-- Lighting (depth, light direction/elevation, shininess, ambient occlusion)
-- Color grading (brightness, contrast, saturation, paper tint, color-driven scale/depth)
+- 10 texture styles with per-style smart defaults, Concrete the newest
+- Lighting (depth, light direction/elevation, shininess, ambient occlusion,
+  Picture Relief: the drawing's own lines raised, or pressed in like letterpress)
+- Color grading (Lighten, brightness, contrast, saturation, paper tint,
+  color-driven scale/depth)
 - Effects (vignette, dye bleed, distressed, halftone, sharpness, color wash, preserve-skin)
 - Color masks: include/exclude specific picked colors from the effect
 - Named presets (saved to `localStorage`), each with its colour masks

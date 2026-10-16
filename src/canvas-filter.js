@@ -149,7 +149,8 @@ import {
         5: { scale: 12, depth: 1.00, soften: 0.45, papertint: 0.40, ao: 0.60, relief: 0 },
         6: { scale: 40, depth: 0.50, soften: 0.50, papertint: 0.25, ao: 0.30, relief: 0 },
         7: { scale: 18, depth: 0.70, soften: 0.30, papertint: 0.10, ao: 0.80, relief: 0 },
-        8: { scale: 28, depth: 0.85, soften: 0.40, papertint: 0.15, ao: 0.65, relief: 0 }
+        8: { scale: 28, depth: 0.85, soften: 0.40, papertint: 0.15, ao: 0.65, relief: 0 },
+        9: { scale: 85, depth: 0.65, soften: 0.15, papertint: 0.00, ao: 0.40, relief: 0.5 }
       };
 
       this.boundHandleFileChange = this.handleFileChange.bind(this);
@@ -2354,6 +2355,53 @@ import {
             return clamp(bead, 0.0, 1.0);
         }
 
+        float hash12(vec2 p) {
+            return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+        }
+
+        // One family of Concrete's grooves, across p.y and running along p.x:
+        // a line per row of cells, nudged off the grid by its row's hash so
+        // the spacing is irregular, and cut into runs of random length that
+        // start and stop. A nudged line can reach into the next row's cell, so
+        // the rows on either side are looked at too, or lines would break
+        // where the grid does. Lines wobble a little along their length, and
+        // runs fade in and out rather than ending square.
+        float concreteGrooves(vec2 p, float seed, float halfWidth, float softness) {
+            float row = floor(p.y);
+            float deepest = 0.0;
+            for (int k = -1; k <= 1; k++) {
+                float r = row + float(k);
+                float lineY = r + 0.5 + (hash12(vec2(r, seed)) - 0.5) * 0.35
+                            + noise(vec2(p.x * 0.6, r * 3.1 + seed)) * 0.12;
+                float across = 1.0 - smoothstep(halfWidth, halfWidth + softness, abs(p.y - lineY));
+
+                float runLength = mix(2.0, 7.0, hash12(vec2(r, seed + 7.13)));
+                float along = p.x / runLength + hash12(vec2(r, seed + 3.71)) * 17.0;
+                float run = floor(along);
+                float t = fract(along);
+                float cut = step(0.06, hash12(vec2(run, r + seed * 13.0)));
+                float cap = smoothstep(0.0, 0.06, t) * smoothstep(0.0, 0.06, 1.0 - t);
+
+                deepest = max(deepest, across * cut * cap);
+            }
+            return deepest;
+        }
+
+        #define CONCRETE_GROOVE 0.033
+        #define CONCRETE_GRIT 0.012
+        float concreteHeightAt(vec2 p) {
+            float softness = mix(0.06, 0.25, clamp(u_soften, 0.0, 1.0));
+            float grooves = max(
+                concreteGrooves(p, 1.0, 0.05, softness),
+                concreteGrooves(p.yx, 2.0, 0.05, softness)
+            );
+            if (u_distressed) {
+                grooves *= 1.0 - smoothstep(0.35, 0.75, noise(p * 0.3) + 0.5);
+            }
+            float grit = noise(p * 1.8) * CONCRETE_GRIT;
+            return clamp(0.9 - grooves * CONCRETE_GROOVE + grit, 0.0, 1.0);
+        }
+
         float mosaicHeightAt(vec2 p) {
             vec2 pRot = rotate2d(PI/4.0) * p;
             
@@ -2399,6 +2447,7 @@ import {
            if (u_textureType == 6) return slateHeightAt(p);
            if (u_textureType == 7) return mosaicHeightAt(p);
            if (u_textureType == 8) return canvas2HeightAt(p);
+           if (u_textureType == 9) return concreteHeightAt(p);
 
            return canvasHeightAt(p);
         }
@@ -2412,9 +2461,19 @@ import {
           return 1.0 - dot(c, vec3(0.299, 0.587, 0.114));
         }
 
+        // Styles from Concrete on are sampled a fixed share of the picture
+        // apart, so they look alike at any size and in the preview; the older
+        // ones keep sampling a fixed number of output pixels apart, as their
+        // looks were made with.
+        float sampleScale() {
+          return u_textureType >= 9
+            ? min(u_resolution.x, u_resolution.y) / ${glslFloat(RELIEF_REFERENCE)}
+            : 1.0;
+        }
+
         vec3 normalFromHeight(vec2 uv, vec2 original_uv) {
           vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
-          float radius = mix(0.85, 2.75, clamp(u_soften, 0.0, 1.0));
+          float radius = mix(0.85, 2.75, clamp(u_soften, 0.0, 1.0)) * sampleScale();
 
           float hL = getHeightAt(uv - vec2(texel.x * radius, 0.0), original_uv);
           float hR = getHeightAt(uv + vec2(texel.x * radius, 0.0), original_uv);
@@ -2512,6 +2571,7 @@ import {
           if (t == 6) return vec3(0.35, 0.37, 0.42);
           if (t == 7) return vec3(0.78, 0.75, 0.72);
           if (t == 8) return vec3(0.94, 0.90, 0.80);
+          if (t == 9) return vec3(0.93, 0.92, 0.90);
           return vec3(0.95, 0.92, 0.84);
         }
 
@@ -2563,7 +2623,7 @@ import {
 
         float computeAO(vec2 uv, vec2 original_uv, float hc) {
           vec2 texel = 1.0 / max(u_resolution, vec2(1.0));
-          float r = 4.5;
+          float r = 4.5 * sampleScale();
           float s = 0.0;
           s += max(0.0, getHeightAt(uv + vec2(r * texel.x, 0.0), original_uv) - hc);
           s += max(0.0, getHeightAt(uv - vec2(r * texel.x, 0.0), original_uv) - hc);

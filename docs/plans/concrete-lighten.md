@@ -36,7 +36,13 @@ then the style that combines them.
       sequence; taking out the mip regeneration after the panel's upload
       fails it (an incomplete chain reads flat, so the relief silently
       vanishes; a fresh element alone can't catch that).
-- [ ] 3. Concrete texture style
+- [x] 3. Concrete texture style. Done 2026-10-16. Defaults: scale 85,
+      depth 0.65, soften 0.15, ao 0.4, relief 0.5. With Lighten 0.5 the plain backgrounds come out at
+      std 27.9 (B, target 26.1) and 4.7 (A, target 6.6), groove periods 5.6–5.8
+      px (target 5.8), tone within rms 3.6–4.3; full size scaled down: 22.7
+      and 3.9, tone 3.9–4.9. Groove depth in the height is 0.033: anything
+      sharper than a pixel saturates the lighting, which is why the first
+      tries came out as hard black-and-white strips.
 - [ ] 4. Sample comparison script; tune against A2 / B2 at sample size and
       at full size downscaled
 - [ ] 5. Checks pass, commit, push (deploys Texturizer); owner judges crops

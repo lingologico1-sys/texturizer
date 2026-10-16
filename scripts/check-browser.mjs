@@ -120,7 +120,7 @@ const sourcePixels = await pixels(source);
 
   const before = el.currentSettingsHash();
   const bad = el.getPreset("Bad");
-  bad.params.texturetype = 9;
+  bad.params.texturetype = 10;
   let threw = false;
   try { el.applyPreset(bad); } catch (e) { threw = true; }
   check("a refused preset throws and changes nothing", threw && el.currentSettingsHash() === before);
@@ -312,6 +312,28 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   check("Picture Relief keeps the picture's colours on average (it shades, it doesn't tint)",
     Math.abs(mean(raised) - mean(off)) < 6, mean(off).toFixed(1) + " -> " + mean(raised).toFixed(1));
   fresh.dispose();
+}
+
+// Concrete, and choosing styles in the panel.
+{
+  const panel = mount({ persist: "off" });
+  await panel.ready();
+  const choose = (index) => {
+    const select = panel.inputs.texturetype;
+    select.value = String(index);
+    select.dispatchEvent(new Event("change"));
+  };
+  choose(9);
+  check("choosing Concrete brings its defaults, Picture Relief on",
+    panel.params.texturetype === 9 && panel.params.relief === 0.5 && panel.params.scale === 85,
+    JSON.stringify({ t: panel.params.texturetype, relief: panel.params.relief, scale: panel.params.scale }));
+  const concrete = (await pixels((await panel.renderBlob(source, { width: 140, height: 192 })).blob)).data;
+  check("Concrete renders a picture", concrete.some((v, i) => i % 4 !== 3 && v > 40) && !same(concrete, sourcePixels.data));
+  panel.setAttribute("lighten", "0.4");
+  choose(0);
+  check("choosing Canvas after it turns Picture Relief off and leaves Lighten alone",
+    panel.params.relief === 0 && panel.params.lighten === 0.4, JSON.stringify({ relief: panel.params.relief, lighten: panel.params.lighten }));
+  panel.dispose();
 }
 
 // Picture Relief reads mipmaps, which go stale if an upload isn't followed by

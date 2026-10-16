@@ -20,7 +20,7 @@ export const MAX_MASK_COLORS = 32;
 // exported file, and a file without it takes it quietly. So a look that
 // doesn't use it keeps the hash, the file and the pixels it always had.
 export const CONTROL_CONFIG = {
-  texturetype: { type: "select", group: "Texture", label: "Texture Style", options: ["Canvas", "Paper", "Ink Wash", "Clay", "Linocut", "Leather", "Slate", "Mosaic", "Canvas 2"], value: 0, min: 0, max: 8, step: 1, suffix: "" },
+  texturetype: { type: "select", group: "Texture", label: "Texture Style", options: ["Canvas", "Paper", "Ink Wash", "Clay", "Linocut", "Leather", "Slate", "Mosaic", "Canvas 2", "Concrete"], value: 0, min: 0, max: 9, step: 1, suffix: "" },
   scale: { type: "range", group: "Texture", label: "Scale", min: 4, max: 120, step: 1, value: 36, suffix: "" },
   angle: { type: "range", group: "Texture", label: "Angle", min: -180, max: 180, step: 1, value: 0, suffix: "°" },
   warp: { type: "range", group: "Texture", label: "Warp", min: 0, max: 1, step: 0.01, value: 0, suffix: "" },

@@ -358,7 +358,54 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   const kept = await render();
   fresh.setAttribute("skinlight", "1");
   const skinLit = await render();
-  check("with Preserve Skin on, Skin Light lights the protected skin", maxDiff(kept, skinLit) > 4, maxDiff(kept, skinLit));
+  check("with Preserve Skin on, Skin Light changes the picture", maxDiff(kept, skinLit) > 4, maxDiff(kept, skinLit));
+
+  // Where the change lands: the shader's skin test, worked out from the
+  // source as the render sampled it, widened by a pixel for resampling.
+  const shrunk = document.createElement("canvas");
+  shrunk.width = 140;
+  shrunk.height = 192;
+  shrunk.getContext("2d").drawImage(await createImageBitmap(source), 0, 0, 140, 192);
+  const src = shrunk.getContext("2d").getImageData(0, 0, 140, 192).data;
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const skinAt = (i) => {
+    const [r, g, b] = [src[i], src[i + 1], src[i + 2]];
+    const y = 0.299 * r + 0.587 * g + 0.114 * b;
+    const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+    const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+    return clamp01((cb - 65) / 12) * clamp01((147 - cb) / 12) * clamp01((cr - 121) / 12) * clamp01((192 - cr) / 12) * clamp01((y - 20) / 20);
+  };
+  const near = (x, y, test) => {
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < 140 && ny < 192 && test(skinAt((ny * 140 + nx) * 4))) return true;
+    }
+    return false;
+  };
+  let outside = 0, skinPixels = 0;
+  const interior = [], textured = [];
+  for (let y = 0; y < 192; y++) for (let x = 0; x < 140; x++) {
+    const i = (y * 140 + x) * 4;
+    const d = Math.max(...[0, 1, 2].map((c) => Math.abs(skinLit[i + c] - kept[i + c])));
+    if (d > 1 && !near(x, y, (s) => s > 0)) outside++;
+    if (skinAt(i) > 0) skinPixels++;
+    if (!near(x, y, (s) => s < 1)) {
+      interior.push(skinLit[i] - kept[i]);
+      textured.push(off[i] - kept[i]);
+    }
+  }
+  check("Skin Light changes nothing outside the skin Preserve Skin protects",
+    skinPixels > 500 && outside === 0, outside + " pixels changed outside, " + skinPixels + " skin pixels");
+  // The concrete's grid repeats every few pixels; a picture without grain
+  // changes smoothly across fully protected skin.
+  const roughness = (list) => {
+    let jump = 0;
+    for (let k = 1; k < list.length; k++) jump += Math.abs(list[k] - list[k - 1]);
+    return jump / Math.max(list.length - 1, 1);
+  };
+  const lit = roughness(interior), grained = roughness(textured);
+  check("and puts no grain on it", interior.length > 200 && lit < grained / 3,
+    lit.toFixed(2) + " against " + grained.toFixed(2) + " with the texture, over " + interior.length + " pixels");
 
   const later = ["vibrance", "lightpool", "skinlight"];
   for (const name of later) fresh.setAttribute(name, "0.5");

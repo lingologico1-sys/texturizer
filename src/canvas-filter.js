@@ -101,6 +101,9 @@ import {
         "saturation",
         "halftone",
         "glow",
+        "vibrance",
+        "lightpool",
+        "skinlight",
         "masktolerance",
         "inktolerance",
         "image-data",
@@ -2216,6 +2219,9 @@ import {
         uniform float u_saturation;
         uniform float u_halftone;
         uniform float u_glow;
+        uniform float u_vibrance;
+        uniform float u_lightpool;
+        uniform float u_skinlight;
         uniform bool u_maskpreview;
 
         in vec2 v_uv;
@@ -2543,6 +2549,24 @@ import {
           return 1.0 - dot(c, vec3(0.299, 0.587, 0.114));
         }
 
+        // The drawing's own slope, as Picture Relief takes it, for Skin Light:
+        // the shape of a face without any of the material's grain.
+        vec2 pictureSlope(vec2 uv) {
+          float shortSide = min(u_resolution.x, u_resolution.y);
+          vec2 tap = vec2(${glslFloat(RELIEF_TAP / RELIEF_REFERENCE)}) * shortSide / max(u_resolution, vec2(1.0));
+          vec2 source = vec2(textureSize(u_imageMip, 0));
+          float lod = log2(max(${glslFloat(RELIEF_BLUR / RELIEF_REFERENCE)} * min(source.x, source.y), 1.0));
+          float pL = pictureHeightAt(uv - vec2(tap.x, 0.0), lod);
+          float pR = pictureHeightAt(uv + vec2(tap.x, 0.0), lod);
+          float pD = pictureHeightAt(uv - vec2(0.0, tap.y), lod);
+          float pU = pictureHeightAt(uv + vec2(0.0, tap.y), lod);
+          return vec2(pL - pR, pD - pU) * ${glslFloat(RELIEF_STRENGTH)};
+        }
+
+        vec3 overlay(vec3 base, vec3 blend) {
+          return mix(2.0 * base * blend, 1.0 - 2.0 * (1.0 - base) * (1.0 - blend), step(0.5, base));
+        }
+
         // Styles from Concrete on are sampled a fixed share of the picture
         // apart, so they look alike at any size and in the preview; the older
         // ones keep sampling a fixed number of output pixels apart, as their
@@ -2852,6 +2876,15 @@ import {
           vec3 blend = vec3(lighting) * lightColor;
           vec3 lightened = u_lighten > 0.0 ? applyLighten(source.rgb, u_lighten) : source.rgb;
           vec3 satColor = applySaturation(lightened, u_saturation);
+          // Vibrance: saturation that goes to the dull colours first and
+          // leaves the already-loud ones, and skin, mostly where they were.
+          if (u_vibrance > 0.0) {
+            float hi = max(satColor.r, max(satColor.g, satColor.b));
+            float lo = min(satColor.r, min(satColor.g, satColor.b));
+            float sat = hi > 0.0 ? (hi - lo) / hi : 0.0;
+            float boost = u_vibrance * 1.6 * (1.0 - sat) * (1.0 - 0.8 * skinMask);
+            satColor = clamp(applySaturation(satColor, 1.0 + boost), 0.0, 1.0);
+          }
           vec3 brightColor = applyBrightness(satColor, max(u_brightness, 0.01));
           vec3 baseColor = applyContrast(brightColor, max(u_contrast, 0.0));
 
@@ -2913,6 +2946,17 @@ import {
           }
 
           vec3 mixedShaded = mix(shaded, baseColor, protectMask);
+
+          // Skin Light: preserved skin still sits in the scene's light. It
+          // takes the drawing's own relief and a little of the light's warmth,
+          // but none of the material, which is what looked wrong on it.
+          if (u_skinlight > 0.0 && skinMask > 0.0) {
+            vec3 skinNormal = normalize(vec3(pictureSlope(v_uv), 1.0));
+            float skinDelta = max(dot(skinNormal, lightDirection), 0.0) - flatLambert;
+            vec3 skinBlend = vec3(clamp(0.5 + skinDelta * 0.9, 0.0, 1.0)) * mix(vec3(1.0), lightColor, 0.5);
+            vec3 skinLit = min(overlay(baseColor, skinBlend) * vec3(1.05, 1.025, 1.0), vec3(1.0));
+            mixedShaded = mix(mixedShaded, skinLit, min(skinMask, protectMask) * u_skinlight);
+          }
           vec3 finalColor = clamp(mixedShaded + specular * lightColor * (1.0 - protectMask), 0.0, 1.0);
 
           if (u_vignette > 0.0) {
@@ -2929,6 +2973,18 @@ import {
             final_hsv.y = wash_hsv.y;
             vec3 colored = hsv2rgb(final_hsv);
             finalColor = mix(finalColor, colored, u_washintensity * (1.0 - protectMask));
+          }
+
+          // Light Pool: the light falls off across the picture, from the side
+          // it comes from, so the scene reads as lit rather than evenly
+          // printed. Scaled, not added, so colours keep their saturation.
+          if (u_lightpool > 0.0) {
+            vec2 pos = (v_uv - 0.5) * 2.0;
+            vec2 toLight = lightDirection.xy / max(length(lightDirection.xy), 1e-4);
+            float pool = smoothstep(-1.4, 1.2, dot(pos, toLight));
+            float centre = 1.0 - smoothstep(0.2, 1.4, length(pos));
+            float lift = (mix(-0.10, 0.16, pool) + centre * 0.05) * u_lightpool;
+            finalColor = clamp(finalColor * (1.0 + lift * lightColor), 0.0, 1.0);
           }
 
           // Glow: the whites bloom softly, in the light's own colour (Light
@@ -3294,6 +3350,9 @@ import {
         uSaturation: gl.getUniformLocation(program, "u_saturation"),
         uHalftone: gl.getUniformLocation(program, "u_halftone"),
         uGlow: gl.getUniformLocation(program, "u_glow"),
+        uVibrance: gl.getUniformLocation(program, "u_vibrance"),
+        uLightPool: gl.getUniformLocation(program, "u_lightpool"),
+        uSkinLight: gl.getUniformLocation(program, "u_skinlight"),
         uMaskPreview: gl.getUniformLocation(program, "u_maskpreview")
       };
     }
@@ -3858,6 +3917,9 @@ import {
       gl.uniform1f(this.locations.uSaturation, this.params.saturation);
       gl.uniform1f(this.locations.uHalftone, this.params.halftone);
       gl.uniform1f(this.locations.uGlow, this.params.glow);
+      gl.uniform1f(this.locations.uVibrance, this.params.vibrance);
+      gl.uniform1f(this.locations.uLightPool, this.params.lightpool);
+      gl.uniform1f(this.locations.uSkinLight, this.params.skinlight);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       gl.bindVertexArray(null);

@@ -12,11 +12,13 @@ There is no backend — all processing happens in the browser on the GPU.
 
 - 10 texture styles with per-style smart defaults, Concrete the newest
 - Lighting (depth, light direction/elevation, shininess, ambient occlusion,
-  Picture Relief: the drawing's own lines raised, or pressed in like letterpress)
-- Color grading (Lighten, brightness, contrast, saturation, paper tint,
+  Picture Relief: the drawing's own lines raised, or pressed in like letterpress;
+  Light Pool: the light falls off across the picture from the side it comes from)
+- Color grading (Lighten, brightness, contrast, saturation, Vibrance, paper tint,
   color-driven scale/depth)
 - Effects (vignette, dye bleed, distressed, halftone, sharpness, color wash, preserve-skin,
-  Glow: the whites bloom softly and the middle lifts, colours kept)
+  Glow: the whites bloom softly and the middle lifts, colours kept;
+  Skin Light: preserved skin takes the drawing's relief and the scene's light, with no grain)
 - Color masks: include/exclude specific picked colors from the effect
 - Named presets (saved to `localStorage`), each with its colour masks
 - Export / Import a preset as a file (`*.texturizer-preset.json`, format v1),

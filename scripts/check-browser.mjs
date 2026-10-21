@@ -324,6 +324,49 @@ check("the ordinary component does use storage", storage.local > 0, JSON.stringi
   let darker = 0;
   for (let i = 0; i < off.length; i++) if (i % 4 !== 3 && glowing[i] < off[i]) darker++;
   check("Glow only ever lightens", mean(glowing) > mean(off) && darker === 0, darker + " values darker");
+
+  fresh.applyPreset(old);
+  fresh.setAttribute("vibrance", "1");
+  const vivid = await render();
+  const chroma = (data) => {
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) sum += Math.max(data[i], data[i + 1], data[i + 2]) - Math.min(data[i], data[i + 1], data[i + 2]);
+    return sum / (data.length / 4);
+  };
+  check("Vibrance makes the colours richer", chroma(vivid) > chroma(off) + 2, chroma(off).toFixed(1) + " -> " + chroma(vivid).toFixed(1));
+
+  fresh.applyPreset(old);
+  fresh.setAttribute("lightpool", "1");
+  const pooled = await render();
+  const quarter = (data, qx, qy) => {
+    let sum = 0, n = 0;
+    for (let y = qy * 96; y < (qy + 1) * 96; y++) for (let x = qx * 70; x < (qx + 1) * 70; x++) {
+      const i = (y * 140 + x) * 4;
+      sum += data[i] + data[i + 1] + data[i + 2]; n += 3;
+    }
+    return sum / n;
+  };
+  const gains = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([qx, qy]) => quarter(pooled, qx, qy) - quarter(off, qx, qy));
+  check("Light Pool lights one side and dims the other", Math.max(...gains) > 2 && Math.min(...gains) < -0.5, gains.map((g) => g.toFixed(1)).join(", "));
+
+  // Skin Light only ever reaches what Preserve Skin protects.
+  fresh.applyPreset(old);
+  fresh.setAttribute("skinlight", "1");
+  check("Skin Light does nothing with Preserve Skin off", maxDiff(off, await render()) === 0);
+  fresh.applyPreset(old);
+  fresh.setAttribute("preserveskin", "1");
+  const kept = await render();
+  fresh.setAttribute("skinlight", "1");
+  const skinLit = await render();
+  check("with Preserve Skin on, Skin Light lights the protected skin", maxDiff(kept, skinLit) > 4, maxDiff(kept, skinLit));
+
+  const later = ["vibrance", "lightpool", "skinlight"];
+  for (const name of later) fresh.setAttribute(name, "0.5");
+  const withAll = fresh.getPreset("all");
+  for (const name of later) delete withAll.params[name];
+  const back = fresh.applyPreset(withAll);
+  check("an old preset without Vibrance, Light Pool or Skin Light turns them off, with nothing to say",
+    later.every((name) => fresh.params[name] === 0) && back.warnings.length === 0, back.warnings.join(" "));
   fresh.dispose();
 }
 
